@@ -1,0 +1,50 @@
+.idea/
+.vscode/
+
+frontend/node_modules/
+frontend/dist/
+
+*.log
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Environment files
+.env
+.env.*
+
+# TypeScript incremental build metadata
+*.tsbuildinfo
+
+# Runtime cache
+Cache/
+cache/
+
+# Build outputs
+/build/
+/dist/
+/web/dist/
+/desktop/build/bin/
+/desktop/build/windows/*.bak
+/desktop/conf/
+/desktop/frontend/dist/
