@@ -18,7 +18,7 @@ func (r *Router) Setup(e *gin.Engine) {
 	api := e.Group("/api/v1")
 	{
 		api.GET("/health", r.healthHandler.CheckHealth)
-
+		api.GET("/github/connection", r.healthHandler.CheckGithubConnection)
 		repositories := api.Group("/repositories")
 		{
 			repositories.POST("open", r.repoHandler.OpenRepository)

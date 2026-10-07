@@ -1,0 +1,7 @@
+{
+  "baseURL": "https://api.github.com",
+  "version": "2026-03-10",
+  "endpoint": {
+    "connection": "octocat"
+  }
+}

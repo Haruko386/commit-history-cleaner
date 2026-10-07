@@ -16,12 +16,18 @@ import (
 )
 
 type stubHealthChecker struct {
-	version string
-	err     error
+	version         string
+	err             error
+	githubConnected bool
+	githubErr       error
 }
 
 func (s stubHealthChecker) CheckHealth(context.Context) (string, error) {
 	return s.version, s.err
+}
+
+func (s stubHealthChecker) CheckGithubConnection(context.Context, string) (bool, error) {
+	return s.githubConnected, s.githubErr
 }
 
 func performHealthRequest(checker handler.HealthChecker, requestID string) *httptest.ResponseRecorder {
@@ -110,6 +116,58 @@ func TestCheckHealthErrors(t *testing.T) {
 			}
 			if body.Meta.RequestID != requestID {
 				t.Fatalf("body requestId = %q, header requestId = %q", body.Meta.RequestID, requestID)
+			}
+		})
+	}
+}
+
+func TestCheckGithubConnection(t *testing.T) {
+	tests := []struct {
+		name      string
+		header    string
+		checker   stubHealthChecker
+		status    int
+		errorCode string
+	}{
+		{name: "missing header", status: http.StatusBadRequest, errorCode: "INVALID_REQUEST"},
+		{name: "missing scheme", header: "token", status: http.StatusBadRequest, errorCode: "INVALID_REQUEST"},
+		{name: "empty token", header: "Bearer", status: http.StatusBadRequest, errorCode: "INVALID_REQUEST"},
+		{name: "wrong scheme", header: "Basic token", status: http.StatusBadRequest, errorCode: "INVALID_REQUEST"},
+		{name: "unauthorized", header: "Bearer token", checker: stubHealthChecker{githubErr: service.ErrGithubUnauthorized}, status: http.StatusUnauthorized, errorCode: "GITHUB_UNAUTHORIZED"},
+		{name: "forbidden", header: "Bearer token", checker: stubHealthChecker{githubErr: service.ErrGithubForbidden}, status: http.StatusForbidden, errorCode: "GITHUB_FORBIDDEN"},
+		{name: "connection failed", header: "Bearer token", checker: stubHealthChecker{githubErr: errors.New("failed")}, status: http.StatusServiceUnavailable, errorCode: "GITHUB_CONNECTION_FAILED"},
+		{name: "connected", header: "Bearer token", checker: stubHealthChecker{githubConnected: true}, status: http.StatusOK},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.Use(middleware.RequestID())
+			router.GET("/api/v1/github/connection", handler.NewHealthHandler(test.checker).CheckGithubConnection)
+
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/github/connection", nil)
+			if test.header != "" {
+				request.Header.Set("Authorization", test.header)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.status, response.Body.String())
+			}
+			if test.errorCode != "" {
+				var body struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if body.Error.Code != test.errorCode {
+					t.Fatalf("code = %q, want %q", body.Error.Code, test.errorCode)
+				}
 			}
 		})
 	}

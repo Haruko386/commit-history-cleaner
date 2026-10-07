@@ -330,12 +330,12 @@ Create a stable Wails + Vue application shell.
 Allow the user to select and validate a local Git repository.
 
 - [x] Welcome page.
-- [ ] “Open Repository” action.
+- [x] “Open Repository” action.
 - [ ] Recent repository list UI.
-- [ ] Repository path display.
-- [ ] Invalid repository state.
-- [ ] Repository metadata summary.
-- [ ] Loading state while opening repository.
+- [x] Repository path display.
+- [x] Invalid repository state.
+- [x] Repository metadata summary.
+- [x] Loading state while opening repository.
 - [ ] Close / switch repository action.
 
 Suggested repository summary:
@@ -349,9 +349,9 @@ Suggested repository summary:
 | Working Tree | Clean |
 | `.git` Size | 1.82 GB |
 
-**Milestone progress:** `1 / 8`  
-**Completion:** `12.5% of M1`  
-**Overall contribution:** `1.25%`
+**Milestone progress:** `6 / 8`
+**Completion:** `75% of M1`
+**Overall contribution:** `7.50%`
 
 ---
 
@@ -610,7 +610,7 @@ Prepare a stable first public release.
 | Milestone | Weight | Completed | Progress | Contribution |
 |---|---:|---:|---:|---:|
 | M0 Project Shell | 5% | 6 / 8 | 75% | 3.75% |
-| M1 Repository Selection | 10% | 1 / 8 | 12.5% | 1.25% |
+| M1 Repository Selection | 10% | 6 / 8 | 75% | 7.50% |
 | M2 Commit History | 20% | 0 / 20 | 0% | 0.00% |
 | M3 Commit Size Analysis UI | 15% | 0 / 12 | 0% | 0.00% |
 | M4 Historical Object Explorer | 15% | 0 / 15 | 0% | 0.00% |
@@ -618,11 +618,11 @@ Prepare a stable first public release.
 | M6 Rewrite Preview | 10% | 0 / 12 | 0% | 0.00% |
 | M7 Command Generator | 10% | 0 / 12 | 0% | 0.00% |
 | M8 Polish / Release | 5% | 0 / 13 | 0% | 0.00% |
-| **TOTAL** | **100%** | — | — | **5.00%** |
+| **TOTAL** | **100%** | — | — | **11.25%** |
 
 ## Current overall completion
 
-# `5%`
+# `11.25%`
 
 ---
 
@@ -636,7 +636,7 @@ Do not guess backend implementation details.
 
 | ID | Feature | Frontend Needs | Backend Status | Owner Decision | Status |
 |---|---|---|---|---|---|
-| API-001 | Open repository | repository metadata | `POST /api/v1/repositories/open` implemented and tested | HTTP first | Ready for Frontend |
+| API-001 | Open repository | repository metadata | `POST /api/v1/repositories/open` implemented, tested, and connected | HTTP first | Integrated |
 | API-002 | Commit history | paginated commit list | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-003 | Commit files | changed files + sizes | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-004 | Object analysis | historical object list | Contract drafted; not implemented | HTTP first | Contract Drafted |
@@ -749,7 +749,7 @@ Status options:
 | ID | Feature | Status | Started | Completed | Notes |
 |---|---|---|---|---|---|
 | FE-001 | App Shell | In Progress | 2026-10-06 | — | Vue/TypeScript shell, navigation, tokens, buttons, and notices implemented; Wails startup remains |
-| FE-002 | Repository Picker | In Progress | 2026-10-06 | — | HTTP repository-open endpoint is ready; frontend integration remains |
+| FE-002 | Repository Picker | In Progress | 2026-10-06 | — | Path input, loading, errors, and repository summary are integrated; recent/current state remains |
 | FE-003 | Commit Timeline | Todo | — | — | — |
 | FE-004 | Commit Detail | Todo | — | — | — |
 | FE-005 | Large Object Explorer | Todo | — | — | — |
@@ -793,6 +793,7 @@ The Agent should append a short entry after meaningful development sessions.
 
 - Implemented `POST /api/v1/repositories/open` with normalized repository metadata and stable error responses.
 - Added repository API coverage for empty repositories, detached HEAD, malformed requests, missing paths, and invalid repositories.
+- Connected the frontend to health, repository-open, and GitHub-connection APIs with loading, success, and error states.
 
 ### Changed
 
@@ -800,18 +801,20 @@ The Agent should append a short entry after meaningful development sessions.
 - Updated repository metadata to use nullable `branch` and `head` fields and the documented camelCase JSON contract.
 - Moved API-001 and BE-001 to ready/resolved; FE-002 is no longer backend-blocked.
 - Added an implementation checklist to `internal/FRONTEND_API.md`; `/health` and `/repositories/open` are complete for the current Web MVP scope.
+- Added explicit GitHub `401/403` responses and documented the Bearer-token contract.
 
 ### Fixed
 
 - Corrected HTTP status mapping, empty-repository behavior, detached HEAD output, the standard `.git` size path, and the router test dependency setup.
 - Rolled back the broad repository-service refactor and restored the owner's original control flow with only local fixes.
+- Completed and tested the GitHub connection handler using a Bearer token in the Authorization header.
 
 ### Progress
 
 ```text
 Before: 5%
-After:  5%
-Change: 0% — backend contract completed; frontend integration is not complete yet.
+After:  11.25%
+Change: +6.25% — repository opening is integrated; recent/current state remains.
 ```
 
 ---

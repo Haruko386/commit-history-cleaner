@@ -2,7 +2,10 @@ package common
 
 import "github.com/google/uuid"
 
-const BaseUrl = "https://api.github.com"
+const (
+	GithubAPIVersion = "2026-03-10"
+	GithubBaseUrl    = "https://api.github.com"
+)
 
 func GenerateUUID() string {
 	id := uuid.New()
