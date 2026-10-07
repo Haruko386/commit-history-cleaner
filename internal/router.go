@@ -7,20 +7,24 @@ import (
 
 type Router struct {
 	healthHandler *handler.HealthHandler
+	repoHandler   *handler.RepositoriesHandler
 }
 
-func NewRouter(healthHandler *handler.HealthHandler) *Router {
-	return &Router{healthHandler: healthHandler}
+func NewRouter(healthHandler *handler.HealthHandler, repoHandler *handler.RepositoriesHandler) *Router {
+	return &Router{healthHandler: healthHandler, repoHandler: repoHandler}
 }
 
 func (r *Router) Setup(e *gin.Engine) {
 	api := e.Group("/api/v1")
 	{
 		api.GET("/health", r.healthHandler.CheckHealth)
-		api.GET("github/connection")
-		//repositories := api.Group("/repositories")
-		//{
-		//
-		//}
+
+		repositories := api.Group("/repositories")
+		{
+			repositories.POST("open", r.repoHandler.OpenRepository)
+			//repositories.GET("current")
+			//repositories.DELETE("current")
+			//repositories.GET("recent")
+		}
 	}
 }

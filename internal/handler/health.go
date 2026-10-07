@@ -59,12 +59,12 @@ func (h *HealthHandler) CheckHealth(c *gin.Context) {
 func healthError(err error) (status int, code, message string, retryable bool) {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return http.StatusServiceUnavailable, "HEALTH_CHECK_TIMEOUT", "The health check timed out.", true
+		return http.StatusServiceUnavailable, common.HealthCheckTimeout, "The health check timed out.", true
 	case errors.Is(err, context.Canceled):
-		return http.StatusServiceUnavailable, "HEALTH_CHECK_CANCELLED", "The health check was cancelled.", true
+		return http.StatusServiceUnavailable, common.HealthCheckCancelled, "The health check was cancelled.", true
 	case errors.Is(err, service.ErrGitNotAvailable):
-		return http.StatusServiceUnavailable, "GIT_NOT_AVAILABLE", "Git is not available. Install Git and ensure it is available on PATH.", false
+		return http.StatusServiceUnavailable, common.GitNotAvailable, "Git is not available. Install Git and ensure it is available on PATH.", false
 	default:
-		return http.StatusInternalServerError, "HEALTH_CHECK_FAILED", "The health check failed.", false
+		return http.StatusInternalServerError, common.HealthCheckFailed, "The health check failed.", false
 	}
 }
