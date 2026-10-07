@@ -796,8 +796,8 @@ CleanupService
 
 - [x] `GET /api/v1/health`
 - [x] `POST /api/v1/repositories/open`
-- [ ] `GET /api/v1/repositories/current`（桌面端阶段实现）
-- [ ] `DELETE /api/v1/repositories/current`（桌面端阶段实现）
+- [x] `GET /api/v1/repositories/current`
+- [x] `DELETE /api/v1/repositories/current`
 - [ ] `GET /api/v1/repositories/recent`
 - [ ] `DELETE /api/v1/repositories/recent/{repositoryId}`
 - [x] `GET /api/v1/github/connection`（独立 GitHub 连通性接口）

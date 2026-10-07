@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"example.com/m/v2/internal/common"
@@ -15,7 +17,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-type RepositoriesSvr struct{}
+type RepositoriesSvr struct {
+	mu      sync.RWMutex
+	current *RepoData
+}
 
 func NewRepositoriesSvr() *RepositoriesSvr {
 	return &RepositoriesSvr{}
@@ -84,6 +89,11 @@ func (s *RepositoriesSvr) OpenRepository(path string) (string, *RepoData, error)
 			if err != nil {
 				return common.InternalError, nil, fmt.Errorf("checking git repository size: %w", err)
 			}
+
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.current = repoData
+
 			return "", repoData, nil
 		}
 		return common.InternalError, nil, fmt.Errorf("reading git HEAD error: %w", err)
@@ -144,6 +154,10 @@ func (s *RepositoriesSvr) OpenRepository(path string) (string, *RepoData, error)
 	repoData.GitDirectoryBytes = repoSize
 	repoData.AnalysisStatus = "not_scanned"
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.current = repoData
+
 	return "", repoData, nil
 }
 
@@ -169,4 +183,26 @@ func dirSize(path string) (int64, error) {
 	})
 
 	return size, err
+}
+
+func (s *RepositoriesSvr) GetCurrentRepository() (int, *RepoData, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.current != nil {
+		return http.StatusOK, s.current, ""
+	}
+	return http.StatusNotFound, nil, common.NoRepositoryOpen
+}
+
+func (s *RepositoriesSvr) ExitCurrentRepository() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.current == nil {
+		return true
+	}
+	// TODO: waiting for `scan` API to be done
+	s.current = nil
+	return true
 }

@@ -642,6 +642,7 @@ Do not guess backend implementation details.
 | API-004 | Object analysis | historical object list | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-005 | Cleanup preview | affected refs + estimate | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-006 | Command generation | generated command plan | Contract drafted; not implemented | HTTP first | Contract Drafted |
+| API-007 | Current repository | restore and close the active repository | `GET` and `DELETE /api/v1/repositories/current` implemented and tested; frontend not connected | HTTP first | Ready for Integration |
 
 ---
 
@@ -732,6 +733,8 @@ Describe behavior in prose only.
 | ID | Date | Module | Problem | Severity | Frontend Blocked | Status |
 |---|---|---|---|---|---|---|
 | BE-001 | 2026-10-06 | Repository selection | No HTTP route for repository selection and metadata | High | No | Resolved |
+| BE-002 | 2026-10-07 | Scan / repository exit | Replace the temporary always-success exit behavior when scan cancellation is implemented | Medium | No | Open |
+| BE-003 | 2026-10-07 | Service boundary | Remove HTTP status codes from `RepositoriesSvr` before the scan/Wails service boundary is finalized | Medium | No | Open |
 
 Status options:
 
@@ -793,6 +796,7 @@ The Agent should append a short entry after meaningful development sessions.
 
 - Implemented `POST /api/v1/repositories/open` with normalized repository metadata and stable error responses.
 - Added repository API coverage for empty repositories, detached HEAD, malformed requests, missing paths, and invalid repositories.
+- Added lifecycle coverage for opening, reading, and closing the current repository, including empty repositories and repeated close requests.
 - Connected the frontend to health, repository-open, and GitHub-connection APIs with loading, success, and error states.
 
 ### Changed
@@ -802,6 +806,7 @@ The Agent should append a short entry after meaningful development sessions.
 - Moved API-001 and BE-001 to ready/resolved; FE-002 is no longer backend-blocked.
 - Added an implementation checklist to `internal/FRONTEND_API.md`; `/health` and `/repositories/open` are complete for the current Web MVP scope.
 - Added explicit GitHub `401/403` responses and documented the Bearer-token contract.
+- Marked the current-repository `GET` and `DELETE` API contracts ready for frontend integration.
 
 ### Fixed
 

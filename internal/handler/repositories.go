@@ -73,3 +73,40 @@ func (h *RepositoriesHandler) OpenRepository(c *gin.Context) {
 
 	c.JSON(http.StatusOK, common.NewSuccessResponse(output, requestID))
 }
+
+func (h *RepositoriesHandler) GetCurrentRepository(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	httpCode, data, code := h.repoSvr.GetCurrentRepository()
+	if httpCode != http.StatusOK {
+		c.JSON(httpCode, common.NewErrorResponse(code, "No repository opened", false, requestID))
+		return
+	}
+
+	output := make(map[string]any)
+	output["id"] = "repo_" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(data.Path)).String()
+	output["name"] = data.Name
+	output["path"] = data.Path
+	output["branch"] = data.Branch
+	output["detachedHead"] = data.DetachedHead
+	output["head"] = data.Head
+	output["commitCount"] = data.CommitCount
+	output["workingTreeStatus"] = data.WorkingTreeStatus
+	output["gitDirectoryBytes"] = data.GitDirectoryBytes
+	output["analysisStatus"] = data.AnalysisStatus
+	output["openedAt"] = data.OpenedAt
+
+	c.JSON(http.StatusOK, common.NewSuccessResponse(output, requestID))
+}
+
+func (h *RepositoriesHandler) ExitCurrentRepository(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	ok := h.repoSvr.ExitCurrentRepository()
+	if !ok {
+		c.JSON(http.StatusNotFound, common.NewErrorResponse(common.InternalError, "can not close repo", false, requestID))
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
