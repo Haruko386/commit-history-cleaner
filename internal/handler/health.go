@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"example.com/m/v2/internal/common"
 	"example.com/m/v2/internal/middleware"
@@ -13,6 +14,7 @@ import (
 
 type HealthChecker interface {
 	CheckHealth(ctx context.Context) (string, error)
+	CheckGithubConnection(ctx context.Context, token string) (bool, error)
 }
 
 type HealthHandler struct {
@@ -67,4 +69,60 @@ func healthError(err error) (status int, code, message string, retryable bool) {
 	default:
 		return http.StatusInternalServerError, common.HealthCheckFailed, "The health check failed.", false
 	}
+}
+
+func (h *HealthHandler) CheckGithubConnection(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	authHeader := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	if authHeader == "" {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(
+			common.InvalidRequest,
+			"auth header is required.",
+			false,
+			requestID,
+		))
+		return
+	}
+
+	scheme, accessToken, ok := strings.Cut(authHeader, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(accessToken) == "" {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(
+			common.InvalidRequest,
+			"GitHub access token is required.",
+			false,
+			requestID,
+		))
+		return
+	}
+
+	ok, err := h.healthSvr.CheckGithubConnection(c.Request.Context(), accessToken)
+	if err != nil {
+		if errors.Is(err, service.ErrGithubUnauthorized) {
+			c.JSON(http.StatusUnauthorized, common.NewErrorResponse(
+				common.GithubUnauthorized,
+				"The GitHub access token is invalid.",
+				false,
+				requestID,
+			))
+			return
+		}
+		if errors.Is(err, service.ErrGithubForbidden) {
+			c.JSON(http.StatusForbidden, common.NewErrorResponse(
+				common.GithubForbidden,
+				"The GitHub access token does not have access.",
+				false,
+				requestID,
+			))
+			return
+		}
+		c.JSON(http.StatusServiceUnavailable, common.NewErrorResponse(
+			common.GithubConnectionFailed,
+			"The GitHub connection check failed.",
+			true,
+			requestID,
+		))
+		return
+	}
+	c.JSON(http.StatusOK, common.NewSuccessResponse(ok, requestID))
 }

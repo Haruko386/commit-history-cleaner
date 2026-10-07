@@ -109,6 +109,7 @@ http://127.0.0.1:{port}/api/v1
 | Method | Path | 用途 |
 |---|---|---|
 | `GET` | `/health` | 服务与 Git CLI 状态 |
+| `GET` | `/github/connection` | 验证 GitHub token 与连通性 |
 | `GET` | `/repositories/current` | 当前打开的仓库 |
 | `POST` | `/repositories/open` | 通过本地路径打开仓库 |
 | `DELETE` | `/repositories/current` | 关闭当前仓库 |
@@ -167,6 +168,35 @@ GET /api/v1/health
 `status`：`ok | degraded`
 
 该接口只检查本地服务和 Git CLI，不检查 GitHub API。GitHub 连通性由独立的 `/api/v1/github/connection` 接口负责。
+
+#### 4.1.1 GitHub 连通性
+
+```http
+GET /api/v1/github/connection
+Authorization: Bearer <token>
+```
+
+成功返回：
+
+```json
+{
+  "data": true,
+  "meta": {
+    "requestId": "req_01J..."
+  }
+}
+```
+
+token 仅用于当前请求，Web 前端不得将其写入 localStorage、日志或构建产物。
+
+可能错误：
+
+| code | HTTP | 说明 |
+|---|---:|---|
+| `INVALID_REQUEST` | 400 | Authorization Header 缺失或格式错误 |
+| `GITHUB_UNAUTHORIZED` | 401 | token 无效 |
+| `GITHUB_FORBIDDEN` | 403 | token 没有访问权限或 GitHub 拒绝访问 |
+| `GITHUB_CONNECTION_FAILED` | 503 | 网络或 GitHub 服务不可用 |
 
 ### 4.2 获取当前仓库
 
@@ -636,6 +666,9 @@ MVP 只返回命令文本，不提供“执行命令”接口。
 | `HEALTH_CHECK_TIMEOUT` | 503 | 提示稍后重试 |
 | `HEALTH_CHECK_CANCELLED` | 503 | 停止当前请求，可重新检查 |
 | `HEALTH_CHECK_FAILED` | 500 | 通用健康检查错误，提供 requestId |
+| `GITHUB_UNAUTHORIZED` | 401 | 提示 token 无效 |
+| `GITHUB_FORBIDDEN` | 403 | 提示 token 权限不足 |
+| `GITHUB_CONNECTION_FAILED` | 503 | 提示检查网络后重试 |
 | `GIT_COMMAND_FAILED` | 500 | 显示 message，提供 requestId |
 | `INTERNAL_ERROR` | 500 | 通用错误状态，提供 requestId |
 
@@ -767,7 +800,7 @@ CleanupService
 - [ ] `DELETE /api/v1/repositories/current`（桌面端阶段实现）
 - [ ] `GET /api/v1/repositories/recent`
 - [ ] `DELETE /api/v1/repositories/recent/{repositoryId}`
-- [ ] `GET /api/v1/github/connection`（独立 GitHub 连通性接口）
+- [x] `GET /api/v1/github/connection`（独立 GitHub 连通性接口）
 
 ### P1：历史与对象分析
 
