@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "CHC",
+  "outputfilename": "CHC",
+  "frontend:dir": "frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "Haruko386",
+    "email": "haruko386@outlook.com"
+  },
+  "info": {
+    "companyName": "Haruko386",
+    "productName": "CHC",
+    "productVersion": "0.0.1",
+    "copyright": "Copyright 2026 Haruko386, SJZU. All rights reserved.",
+    "comments": "commit history cleaner"
+  }
+}
