@@ -153,6 +153,96 @@ func TestOpenRepositoryResponseUsesSeparateIDs(t *testing.T) {
 	}
 }
 
+func TestCurrentRepositoryLifecycle(t *testing.T) {
+	repositoryPath := t.TempDir()
+	if _, err := git.PlainInit(repositoryPath, false); err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(middleware.RequestID())
+	repositoryHandler := handler.NewRepositoriesHandler(service.NewRepositoriesSvr())
+	router.POST("/api/v1/repositories/open", repositoryHandler.OpenRepository)
+	router.GET("/api/v1/repositories/current", repositoryHandler.GetCurrentRepository)
+	router.DELETE("/api/v1/repositories/current", repositoryHandler.ExitCurrentRepository)
+
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		httpRequest := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		if body != "" {
+			httpRequest.Header.Set("Content-Type", "application/json")
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httpRequest)
+		return response
+	}
+
+	response := request(http.MethodGet, "/api/v1/repositories/current", "")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("initial current status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
+	}
+	var missing common.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &missing); err != nil {
+		t.Fatalf("decode missing current response: %v", err)
+	}
+	if missing.Error.Code != common.NoRepositoryOpen || missing.Error.Retryable {
+		t.Fatalf("unexpected missing current error: %+v", missing.Error)
+	}
+
+	response = request(http.MethodPost, "/api/v1/repositories/open", repositoryRequestBody(t, repositoryPath))
+	if response.Code != http.StatusOK {
+		t.Fatalf("open status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var opened struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &opened); err != nil {
+		t.Fatalf("decode open response: %v", err)
+	}
+
+	response = request(http.MethodGet, "/api/v1/repositories/current", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("current status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var current struct {
+		Data struct {
+			ID                string  `json:"id"`
+			Path              string  `json:"path"`
+			Branch            *string `json:"branch"`
+			Head              *string `json:"head"`
+			CommitCount       int     `json:"commitCount"`
+			WorkingTreeStatus string  `json:"workingTreeStatus"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current response: %v", err)
+	}
+	if current.Data.ID != opened.Data.ID || current.Data.Path != filepath.Clean(repositoryPath) {
+		t.Fatalf("unexpected current repository: %+v", current.Data)
+	}
+	if current.Data.Branch != nil || current.Data.Head != nil || current.Data.CommitCount != 0 || current.Data.WorkingTreeStatus != "unborn" {
+		t.Fatalf("unexpected empty repository state: %+v", current.Data)
+	}
+
+	response = request(http.MethodDelete, "/api/v1/repositories/current", "")
+	if response.Code != http.StatusNoContent || response.Body.Len() != 0 {
+		t.Fatalf("close status = %d, body=%q", response.Code, response.Body.String())
+	}
+
+	response = request(http.MethodGet, "/api/v1/repositories/current", "")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("current after close status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
+	}
+
+	response = request(http.MethodDelete, "/api/v1/repositories/current", "")
+	if response.Code != http.StatusNoContent || response.Body.Len() != 0 {
+		t.Fatalf("repeated close status = %d, body=%q", response.Code, response.Body.String())
+	}
+}
+
 func performRepositoryRequest(body string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

@@ -22,8 +22,8 @@ func (r *Router) Setup(e *gin.Engine) {
 		repositories := api.Group("/repositories")
 		{
 			repositories.POST("open", r.repoHandler.OpenRepository)
-			//repositories.GET("current")
-			//repositories.DELETE("current")
+			repositories.GET("current", r.repoHandler.GetCurrentRepository)
+			repositories.DELETE("current", r.repoHandler.ExitCurrentRepository)
 			//repositories.GET("recent")
 		}
 	}
