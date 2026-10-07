@@ -7,13 +7,17 @@ import (
 
 	appinternal "example.com/m/v2/internal"
 	"example.com/m/v2/internal/handler"
+	"example.com/m/v2/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 func TestHealthRouteUsesVersionedPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	appinternal.NewRouter(handler.NewHealthHandler(stubHealthChecker{version: "2.47.1"})).Setup(engine)
+	appinternal.NewRouter(
+		handler.NewHealthHandler(stubHealthChecker{version: "2.47.1"}),
+		handler.NewRepositoriesHandler(service.NewRepositoriesSvr()),
+	).Setup(engine)
 
 	versioned := httptest.NewRecorder()
 	engine.ServeHTTP(versioned, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))

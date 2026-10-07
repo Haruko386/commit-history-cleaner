@@ -754,3 +754,36 @@ CleanupService
 - [受保护分支说明](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 
 实现清理提示时，应特别参考“删除敏感数据”文档中的历史重写副作用、协作者同步、fork/clone 残留和强制推送风险。
+
+## 12. API 实现 Checklist
+
+完成标准：路由、Handler、Service、统一响应结构和基本自动化测试均已具备。当前 `open` 接口按 Web MVP 的标准本地工作区仓库范围验收；bare repository 和 linked worktree 暂不作为本次 PR 的阻塞项。
+
+### P0：页面壳与仓库选择
+
+- [x] `GET /api/v1/health`
+- [x] `POST /api/v1/repositories/open`
+- [ ] `GET /api/v1/repositories/current`（桌面端阶段实现）
+- [ ] `DELETE /api/v1/repositories/current`（桌面端阶段实现）
+- [ ] `GET /api/v1/repositories/recent`
+- [ ] `DELETE /api/v1/repositories/recent/{repositoryId}`
+- [ ] `GET /api/v1/github/connection`（独立 GitHub 连通性接口）
+
+### P1：历史与对象分析
+
+- [ ] `POST /api/v1/repositories/current/scans`
+- [ ] `GET /api/v1/tasks/{taskId}`
+- [ ] `DELETE /api/v1/tasks/{taskId}`
+- [ ] `GET /api/v1/repositories/current/commits`
+- [ ] `GET /api/v1/repositories/current/commits/{sha}`
+- [ ] `GET /api/v1/repositories/current/commits/{sha}/files`
+- [ ] `GET /api/v1/repositories/current/storage`
+- [ ] `GET /api/v1/repositories/current/objects`
+- [ ] `GET /api/v1/repositories/current/objects/{oid}`
+
+### P2：清理预览与命令生成
+
+- [ ] `POST /api/v1/cleanup/plans`
+- [ ] `GET /api/v1/cleanup/plans/{planId}`
+- [ ] `DELETE /api/v1/cleanup/plans/{planId}`
+- [ ] `POST /api/v1/cleanup/plans/{planId}/commands`

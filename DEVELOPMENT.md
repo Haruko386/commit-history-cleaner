@@ -99,6 +99,16 @@ This applies even if:
 
 Without explicit authorization, the Agent must only provide a backend correction report.
 
+### Minimal-change rule for authorized backend work
+
+Even when backend changes are explicitly authorized, the Agent must make the smallest possible patch and preserve the owner's naming, structure, control flow, and reasoning style.
+
+- Change only the lines required by the owner's request.
+- Do not rewrite or broadly refactor an existing backend function when an in-place fix is sufficient.
+- Do not extract logic into a separate method unless it is reused roughly four or five times, or the original function is clearly too long to remain understandable.
+- Tests may be added, but adding tests does not authorize restructuring the implementation.
+- If a fix would require a broad redesign, stop and ask the owner before changing it.
+
 ### Allowed backend assistance without authorization
 
 The Agent may provide:
@@ -626,7 +636,7 @@ Do not guess backend implementation details.
 
 | ID | Feature | Frontend Needs | Backend Status | Owner Decision | Status |
 |---|---|---|---|---|---|
-| API-001 | Open repository | repository metadata | Contract drafted; not implemented | HTTP first | Contract Drafted |
+| API-001 | Open repository | repository metadata | `POST /api/v1/repositories/open` implemented and tested | HTTP first | Ready for Frontend |
 | API-002 | Commit history | paginated commit list | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-003 | Commit files | changed files + sizes | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-004 | Object analysis | historical object list | Contract drafted; not implemented | HTTP first | Contract Drafted |
@@ -646,13 +656,13 @@ Repository selection
 Open a native directory picker, validate that the selected directory is a Git repository, and return repository metadata for the workspace header and overview.
 
 **Current backend behavior:**  
-The desktop shell and versioned health route exist, but no HTTP repository operations are implemented.
+`POST /api/v1/repositories/open` validates and normalizes a local path and returns repository metadata using the shared response envelope.
 
 **Problem:**  
-The welcome page can present the action, but it cannot open or validate a repository without a backend contract.
+Resolved for the HTTP frontend phase. The frontend still needs to call the endpoint and render its loading, success, and error states.
 
 **Suggested backend responsibility:**  
-Implement the HTTP-first repository contract in `internal/FRONTEND_API.md`. The backend should own path validation, Git command execution, and normalized error reporting. A later Wails adapter should reuse the same business service and response model.
+Implemented for repository validation, Git metadata, normalized error responses, empty repositories, and detached HEAD. Bare repositories and linked worktrees remain future edge cases. A later Wails adapter should reuse the same business service and response model.
 
 **Suggested response fields:**
 
@@ -675,9 +685,9 @@ Implement the HTTP-first repository contract in `internal/FRONTEND_API.md`. The 
 - Repository is in detached HEAD state or has no commits yet.
 - Git CLI is unavailable.
 
-**Frontend blocked:** Yes
+**Frontend blocked:** No
 
-**Backend code written by Agent:** **NO**
+**Backend code written by Agent:** **YES — explicitly authorized by the owner on 2026-10-07**
 
 ---
 
@@ -721,7 +731,7 @@ Describe behavior in prose only.
 
 | ID | Date | Module | Problem | Severity | Frontend Blocked | Status |
 |---|---|---|---|---|---|---|
-| BE-001 | 2026-10-06 | Repository selection | No HTTP route for repository selection and metadata | High | Yes | Open |
+| BE-001 | 2026-10-06 | Repository selection | No HTTP route for repository selection and metadata | High | No | Resolved |
 
 Status options:
 
@@ -739,7 +749,7 @@ Status options:
 | ID | Feature | Status | Started | Completed | Notes |
 |---|---|---|---|---|---|
 | FE-001 | App Shell | In Progress | 2026-10-06 | — | Vue/TypeScript shell, navigation, tokens, buttons, and notices implemented; Wails startup remains |
-| FE-002 | Repository Picker | Blocked | 2026-10-06 | — | Welcome page and empty state implemented; waiting for the HTTP contract in BE-001 |
+| FE-002 | Repository Picker | In Progress | 2026-10-06 | — | HTTP repository-open endpoint is ready; frontend integration remains |
 | FE-003 | Commit Timeline | Todo | — | — | — |
 | FE-004 | Commit Detail | Todo | — | — | — |
 | FE-005 | Large Object Explorer | Todo | — | — | — |
@@ -769,12 +779,42 @@ Important product and architecture decisions should be recorded here.
 | DEC-004 | Initial | System Git preferred initially | Maximum compatibility with existing Git workflow | Accepted |
 | DEC-005 | Initial | Preview before destructive operations | Reduce risk of repository damage | Accepted |
 | DEC-006 | 2026-10-06 | Build the web frontend against HTTP before Wails integration | Finish and test browser UI first while keeping a replaceable service adapter | Accepted |
+| DEC-007 | 2026-10-07 | Authorized backend edits must remain minimal and preserve the owner's code structure | Keep backend changes understandable and under owner control | Accepted |
 
 ---
 
 # 12. Change Log
 
 The Agent should append a short entry after meaningful development sessions.
+
+## 2026-10-07
+
+### Added
+
+- Implemented `POST /api/v1/repositories/open` with normalized repository metadata and stable error responses.
+- Added repository API coverage for empty repositories, detached HEAD, malformed requests, missing paths, and invalid repositories.
+
+### Changed
+
+- Normalized repository paths and separated stable repository IDs from per-request IDs.
+- Updated repository metadata to use nullable `branch` and `head` fields and the documented camelCase JSON contract.
+- Moved API-001 and BE-001 to ready/resolved; FE-002 is no longer backend-blocked.
+- Added an implementation checklist to `internal/FRONTEND_API.md`; `/health` and `/repositories/open` are complete for the current Web MVP scope.
+
+### Fixed
+
+- Corrected HTTP status mapping, empty-repository behavior, detached HEAD output, the standard `.git` size path, and the router test dependency setup.
+- Rolled back the broad repository-service refactor and restored the owner's original control flow with only local fixes.
+
+### Progress
+
+```text
+Before: 5%
+After:  5%
+Change: 0% — backend contract completed; frontend integration is not complete yet.
+```
+
+---
 
 ## 2026-10-06
 
