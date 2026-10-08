@@ -5,9 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	appinternal "example.com/m/v2/internal"
-	"example.com/m/v2/internal/handler"
-	"example.com/m/v2/internal/service"
+	appinternal "github.com/Haruko386/commit-history-cleaner/internal"
+	"github.com/Haruko386/commit-history-cleaner/internal/handler"
+	"github.com/Haruko386/commit-history-cleaner/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

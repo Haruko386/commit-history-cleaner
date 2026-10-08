@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"example.com/m/v2/internal/common"
-	"example.com/m/v2/internal/entity"
+	"github.com/Haruko386/commit-history-cleaner/internal/common"
+	"github.com/Haruko386/commit-history-cleaner/internal/entity"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -36,6 +36,7 @@ var (
 	ErrScanAlreadyCancelled = errors.New("repository scan has already been cancelled")
 )
 
+// TODO do a refactor for repo struct, create an entity for it
 type RepoData struct {
 	Name              string    `json:"name"`
 	Path              string    `json:"path"`

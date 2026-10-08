@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/m/v2/internal/service"
+	"github.com/Haruko386/commit-history-cleaner/internal/service"
 )
 
 func TestHealthServiceReturnsNormalizedGitVersion(t *testing.T) {

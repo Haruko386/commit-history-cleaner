@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"example.com/m/v2/internal/common"
+	"github.com/Haruko386/commit-history-cleaner/internal/common"
 )
 
 var (

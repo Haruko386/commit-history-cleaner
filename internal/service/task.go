@@ -5,13 +5,15 @@ import (
 	"sync"
 	"time"
 
-	"example.com/m/v2/internal/entity"
+	"github.com/Haruko386/commit-history-cleaner/internal/entity"
 )
 
 type TaskSvr struct {
 	mu           sync.Mutex
 	taskList     map[string]*entity.Task
 	repoTaskList map[string]string
+
+	worker entity.Worker
 }
 
 func NewTaskSvr() *TaskSvr {
