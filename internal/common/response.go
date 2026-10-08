@@ -9,10 +9,15 @@ type SuccessResponse[T any] struct {
 	Meta ResponseMeta `json:"meta"`
 }
 
+type Details struct {
+	TaskID string `json:"taskId"`
+}
+
 type ErrorPayload struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
+	Code      string   `json:"code"`
+	Message   string   `json:"message"`
+	Details   *Details `json:"details,omitempty"`
+	Retryable bool     `json:"retryable"`
 }
 
 type ErrorResponse struct {
@@ -32,6 +37,18 @@ func NewErrorResponse(code, message string, retryable bool, requestID string) Er
 		Error: ErrorPayload{
 			Code:      code,
 			Message:   message,
+			Retryable: retryable,
+		},
+		Meta: ResponseMeta{RequestID: requestID},
+	}
+}
+
+func NewErrorResponseWithDetails(code, message, details string, retryable bool, requestID string) ErrorResponse {
+	return ErrorResponse{
+		Error: ErrorPayload{
+			Code:      code,
+			Message:   message,
+			Details:   &Details{TaskID: details},
 			Retryable: retryable,
 		},
 		Meta: ResponseMeta{RequestID: requestID},

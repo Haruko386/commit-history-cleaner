@@ -3,6 +3,7 @@ package test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"example.com/m/v2/internal/common"
+	"example.com/m/v2/internal/entity"
 	"example.com/m/v2/internal/handler"
 	"example.com/m/v2/internal/middleware"
 	"example.com/m/v2/internal/service"
@@ -26,7 +28,7 @@ func TestOpenEmptyRepository(t *testing.T) {
 		t.Fatalf("initialize repository: %v", err)
 	}
 
-	code, data, err := service.NewRepositoriesSvr().OpenRepository(repositoryPath)
+	code, data, err := service.NewRepositoriesSvr(service.NewTaskSvr()).OpenRepository(repositoryPath)
 	if err != nil {
 		t.Fatalf("open repository: code=%q error=%v", code, err)
 	}
@@ -75,7 +77,7 @@ func TestOpenDetachedRepository(t *testing.T) {
 		t.Fatalf("detach HEAD: %v", err)
 	}
 
-	_, data, err := service.NewRepositoriesSvr().OpenRepository(repositoryPath)
+	_, data, err := service.NewRepositoriesSvr(service.NewTaskSvr()).OpenRepository(repositoryPath)
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -162,7 +164,7 @@ func TestCurrentRepositoryLifecycle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(middleware.RequestID())
-	repositoryHandler := handler.NewRepositoriesHandler(service.NewRepositoriesSvr())
+	repositoryHandler := handler.NewRepositoriesHandler(service.NewRepositoriesSvr(service.NewTaskSvr()))
 	router.POST("/api/v1/repositories/open", repositoryHandler.OpenRepository)
 	router.GET("/api/v1/repositories/current", repositoryHandler.GetCurrentRepository)
 	router.DELETE("/api/v1/repositories/current", repositoryHandler.ExitCurrentRepository)
@@ -243,11 +245,88 @@ func TestCurrentRepositoryLifecycle(t *testing.T) {
 	}
 }
 
+func TestScanRepositoryResponses(t *testing.T) {
+	repositoryPath := t.TempDir()
+	if _, err := git.PlainInit(repositoryPath, false); err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+
+	taskService := service.NewTaskSvr()
+	repositoryService := service.NewRepositoriesSvr(taskService)
+	repositoryHandler := handler.NewRepositoriesHandler(repositoryService)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(middleware.RequestID())
+	router.POST("/api/v1/repositories/current/scans", repositoryHandler.ScanRepository)
+
+	request := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		httpRequest := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/current/scans", bytes.NewBufferString(body))
+		httpRequest.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httpRequest)
+		return response
+	}
+
+	response := request(`{"force":false}`)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("scan without repository status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
+	}
+
+	if _, _, err := repositoryService.OpenRepository(repositoryPath); err != nil {
+		t.Fatalf("open repository: %v", err)
+	}
+
+	response = request(`{"force":false}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start scan status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	var started struct {
+		Data entity.Task         `json:"data"`
+		Meta common.ResponseMeta `json:"meta"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+		t.Fatalf("decode scan response: %v", err)
+	}
+	if started.Data.TaskID == "" || started.Data.Status != entity.Queued || started.Meta.RequestID == "" {
+		t.Fatalf("unexpected scan response: %+v", started)
+	}
+
+	response = request(`{"force":false}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("duplicate scan status = %d, want %d; body=%s", response.Code, http.StatusConflict, response.Body.String())
+	}
+	var duplicate common.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &duplicate); err != nil {
+		t.Fatalf("decode duplicate scan response: %v", err)
+	}
+	if duplicate.Error.Code != common.ScanAlreadyRunning || duplicate.Error.Details == nil || duplicate.Error.Details.TaskID != started.Data.TaskID {
+		t.Fatalf("unexpected duplicate scan error: %+v", duplicate)
+	}
+	if duplicate.Meta.RequestID == "" || duplicate.Meta.RequestID == started.Data.TaskID {
+		t.Fatalf("request id = %q, task id = %q", duplicate.Meta.RequestID, started.Data.TaskID)
+	}
+
+	task, err := repositoryService.ScanRepository(false)
+	if !errors.Is(err, service.ErrScanAlreadyQueued) {
+		t.Fatalf("queued scan error = %v, want %v", err, service.ErrScanAlreadyQueued)
+	}
+	task.Status = entity.Completed
+	forced, err := repositoryService.ScanRepository(true)
+	if err != nil {
+		t.Fatalf("force scan: %v", err)
+	}
+	if forced.Status != entity.Queued {
+		t.Fatalf("forced scan status = %q, want %q", forced.Status, entity.Queued)
+	}
+}
+
 func performRepositoryRequest(body string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(middleware.RequestID())
-	router.POST("/api/v1/repositories/open", handler.NewRepositoriesHandler(service.NewRepositoriesSvr()).OpenRepository)
+	router.POST("/api/v1/repositories/open", handler.NewRepositoriesHandler(service.NewRepositoriesSvr(service.NewTaskSvr())).OpenRepository)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/open", bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")

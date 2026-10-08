@@ -14,9 +14,11 @@ import (
 func TestHealthRouteUsesVersionedPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
+	taskService := service.NewTaskSvr()
 	appinternal.NewRouter(
 		handler.NewHealthHandler(stubHealthChecker{version: "2.47.1"}),
-		handler.NewRepositoriesHandler(service.NewRepositoriesSvr()),
+		handler.NewRepositoriesHandler(service.NewRepositoriesSvr(taskService)),
+		handler.NewTaskHandler(taskService),
 	).Setup(engine)
 
 	versioned := httptest.NewRecorder()

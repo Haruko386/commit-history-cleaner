@@ -17,13 +17,16 @@ import (
 )
 
 func main() {
+	taskSvr := service.NewTaskSvr()
+
+	taskHandler := handler.NewTaskHandler(taskSvr)
 	healthHandler := handler.NewHealthHandler(service.NewHealthSvr())
-	repoHandler := handler.NewRepositoriesHandler(service.NewRepositoriesSvr())
+	repoHandler := handler.NewRepositoriesHandler(service.NewRepositoriesSvr(taskSvr))
 
 	r := gin.Default()
 	r.Use(middleware.RequestID())
 
-	router := internal.NewRouter(healthHandler, repoHandler)
+	router := internal.NewRouter(healthHandler, repoHandler, taskHandler)
 	router.Setup(r)
 
 	srv := &http.Server{

@@ -11,6 +11,8 @@ const (
 	PathNotReadable        = "PATH_NOT_READABLE"
 	NotAGitRepository      = "NOT_A_GIT_REPOSITORY"
 	ScanAlreadyRunning     = "SCAN_ALREADY_RUNNING"
+	ScanAlreadyCompleted   = "SCAN_ALREADY_COMPLETED"
+	ScanAlreadyCancelled   = "SCAN_ALREADY_CANCELLED"
 	RepositoryChanged      = "REPOSITORY_CHANGED"
 	GitNotAvailable        = "GIT_NOT_AVAILABLE"
 	HealthCheckTimeout     = "HEALTH_CHECK_TIMEOUT"

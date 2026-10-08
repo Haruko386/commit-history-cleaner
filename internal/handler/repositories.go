@@ -1,13 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"example.com/m/v2/internal/common"
 	"example.com/m/v2/internal/middleware"
 	"example.com/m/v2/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type RepositoriesHandler struct {
@@ -59,7 +59,7 @@ func (h *RepositoriesHandler) OpenRepository(c *gin.Context) {
 	}
 
 	output := make(map[string]any)
-	output["id"] = "repo_" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(data.Path)).String()
+	output["id"] = common.GenerateRepoID(data.Path)
 	output["name"] = data.Name
 	output["path"] = data.Path
 	output["branch"] = data.Branch
@@ -84,7 +84,7 @@ func (h *RepositoriesHandler) GetCurrentRepository(c *gin.Context) {
 	}
 
 	output := make(map[string]any)
-	output["id"] = "repo_" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(data.Path)).String()
+	output["id"] = common.GenerateRepoID(data.Path)
 	output["name"] = data.Name
 	output["path"] = data.Path
 	output["branch"] = data.Branch
@@ -109,4 +109,49 @@ func (h *RepositoriesHandler) ExitCurrentRepository(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+func (h *RepositoriesHandler) ScanRepository(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	type Req struct {
+		Force bool `json:"force"`
+	}
+	req := new(Req)
+
+	if err := c.ShouldBindJSON(req); err != nil {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Request body must contain a valid boolean force field.", false, requestID))
+		return
+	}
+
+	data, err := h.repoSvr.ScanRepository(req.Force)
+	if err != nil {
+		switch {
+		// repository not opened
+		case errors.Is(err, service.ErrNoRepositoryOpen):
+			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.NoRepositoryOpen, err.Error(), false, requestID))
+			return
+		// scan already queued
+		case errors.Is(err, service.ErrScanAlreadyQueued):
+			c.JSON(http.StatusConflict, common.NewErrorResponseWithDetails(common.ScanAlreadyRunning, err.Error(), data.TaskID, false, requestID))
+			return
+		// scan already running
+		case errors.Is(err, service.ErrScanAlreadyRunning):
+			c.JSON(http.StatusConflict, common.NewErrorResponseWithDetails(common.ScanAlreadyRunning, err.Error(), data.TaskID, false, requestID))
+			return
+		// scan already completed
+		case errors.Is(err, service.ErrScanAlreadyCompleted):
+			c.JSON(http.StatusConflict, common.NewErrorResponseWithDetails(common.ScanAlreadyCompleted, err.Error(), data.TaskID, false, requestID))
+			return
+		// scan already canceled
+		case errors.Is(err, service.ErrScanAlreadyCancelled):
+			c.JSON(http.StatusConflict, common.NewErrorResponseWithDetails(common.ScanAlreadyCancelled, err.Error(), data.TaskID, false, requestID))
+			return
+		default:
+			c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.InternalError, "The repository scan could not be started.", false, requestID))
+			return
+		}
+	}
+
+	c.JSON(http.StatusAccepted, common.NewSuccessResponse(data, requestID))
 }
