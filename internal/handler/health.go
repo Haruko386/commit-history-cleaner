@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"example.com/m/v2/internal/common"
-	"example.com/m/v2/internal/middleware"
-	"example.com/m/v2/internal/service"
+	"github.com/Haruko386/commit-history-cleaner/internal/common"
+	"github.com/Haruko386/commit-history-cleaner/internal/middleware"
+	"github.com/Haruko386/commit-history-cleaner/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

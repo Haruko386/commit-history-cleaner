@@ -1,4 +1,4 @@
-module example.com/m/v2
+module github.com/Haruko386/commit-history-cleaner
 
 go 1.26.4
 

@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"example.com/m/v2/internal/handler"
+	"github.com/Haruko386/commit-history-cleaner/internal/handler"
 	"github.com/gin-gonic/gin"
 )
 
