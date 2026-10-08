@@ -1,0 +1,60 @@
+name: Pull Request Labeler
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Add labels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label from title and description
+        uses: actions/github-script@v9
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        with:
+          script: |
+            const title = process.env.PR_TITLE || '';
+            const body = process.env.PR_BODY || '';
+            const labels = new Set();
+
+            const titleMatches = (pattern) => pattern.test(title);
+            const checked = (name) => new RegExp(`-\\s*\\[[xX]\\]\\s*${name}`, 'i').test(body);
+
+            if (titleMatches(/^(feat)(\(.+\))?!?:|\b(feature|add|implement)\b|新增|添加|实现/i) || checked('New feature') || checked('CI \/ build change')) {
+              labels.add('✨feature');
+            }
+            if (titleMatches(/^(fix)(\(.+\))?!?:|\b(bug|bugfix)\b|修复/i) || checked('Bug fix')) {
+              labels.add('🐞bug');
+            }
+            if (titleMatches(/^(refactor)(\(.+\))?!?:|\brefactor\b|重构/i) || checked('Refactor')) {
+              labels.add('♾️refactor');
+            }
+            if (titleMatches(/^(docs)(\(.+\))?!?:|\b(documentation|docs)\b|文档/i) || checked('Documentation update')) {
+              labels.add('📃documentation');
+            }
+
+            if (labels.size === 0) {
+              core.info('No automatic label matched this pull request.');
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [...labels],
+            });
+
+            core.info(`Added labels: ${[...labels].join(', ')}`);
