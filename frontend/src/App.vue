@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 type NavigationItem = {
   label: string
@@ -25,7 +25,26 @@ type ErrorResponse = {
   error?: {
     code?: string
     message?: string
+    details?: {
+      taskId?: string
+    }
   }
+}
+
+type ScanTask = {
+  taskId: string
+  type: 'repository_scan'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  progress: {
+    phase: string
+    current: number
+    total: number | null
+    percent: number | null
+  }
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  error?: string | null
 }
 
 const navigation: NavigationItem[] = [
@@ -42,9 +61,36 @@ const backendStatus = ref<'checking' | 'online' | 'offline'>('checking')
 const repositoryPath = ref('')
 const repository = ref<RepositorySummary | null>(null)
 const openingRepository = ref(false)
+const scanTask = ref<ScanTask | null>(null)
+const startingScan = ref(false)
+const cancellingScan = ref(false)
+const scanRequiresForce = ref(false)
 const githubToken = ref('')
 const githubStatus = ref<'idle' | 'checking' | 'connected' | 'error'>('idle')
 const githubMessage = ref('Not connected')
+let scanPollTimer: ReturnType<typeof setTimeout> | undefined
+
+const scanIsActive = computed(() => scanTask.value?.status === 'queued' || scanTask.value?.status === 'running')
+const scanButtonLabel = computed(() => {
+  if (startingScan.value) return 'Starting scan…'
+  if (scanIsActive.value) return 'Scanning…'
+  if (scanRequiresForce.value || scanTask.value || repository.value?.analysisStatus === 'ready' || repository.value?.analysisStatus === 'failed') {
+    return 'Scan again'
+  }
+  return 'Scan repository'
+})
+const scanProgressLabel = computed(() => {
+  const task = scanTask.value
+  if (!task) return 'Scan commit history before viewing analysis results.'
+  if (task.status === 'queued') return 'Waiting for the scanner to start.'
+  if (task.status === 'running') {
+    const total = task.progress.total == null ? '?' : task.progress.total
+    return `Scanning commits: ${task.progress.current} / ${total}`
+  }
+  if (task.status === 'completed') return `${task.progress.current} commits scanned.`
+  if (task.status === 'cancelled') return 'The scan was cancelled.'
+  return task.error ?? 'The scan failed.'
+})
 
 function showNotice(message: string, tone: 'info' | 'error' | 'success' = 'info') {
   notice.value = message
@@ -108,6 +154,9 @@ async function openRepository() {
       return
     }
 
+    clearScanPoll()
+    scanTask.value = null
+    scanRequiresForce.value = false
     repository.value = body.data
     repositoryPath.value = body.data.path
     showNotice(`Opened ${body.data.name}.`, 'success')
@@ -115,6 +164,123 @@ async function openRepository() {
     showNotice('The local backend is unavailable.', 'error')
   } finally {
     openingRepository.value = false
+  }
+}
+
+function clearScanPoll() {
+  if (scanPollTimer !== undefined) {
+    clearTimeout(scanPollTimer)
+    scanPollTimer = undefined
+  }
+}
+
+function updateRepositoryAnalysis(status: RepositorySummary['analysisStatus']) {
+  if (repository.value) repository.value = { ...repository.value, analysisStatus: status }
+}
+
+function scheduleScanPoll(taskId: string) {
+  clearScanPoll()
+  scanPollTimer = setTimeout(() => void refreshScanTask(taskId), 800)
+}
+
+async function refreshScanTask(taskId: string) {
+  try {
+    const response = await fetch(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
+    const body = (await response.json()) as { data?: ScanTask } & ErrorResponse
+    if (!response.ok || !body.data) {
+      showNotice(body.error?.message ?? 'The scan status could not be loaded.', 'error')
+      return
+    }
+
+    scanTask.value = body.data
+    if (body.data.status === 'queued' || body.data.status === 'running') {
+      updateRepositoryAnalysis('scanning')
+      scheduleScanPoll(taskId)
+      return
+    }
+
+    clearScanPoll()
+    if (body.data.status === 'completed') {
+      updateRepositoryAnalysis('ready')
+      scanRequiresForce.value = true
+      showNotice('Repository scan completed.', 'success')
+    } else if (body.data.status === 'failed') {
+      updateRepositoryAnalysis('failed')
+      scanRequiresForce.value = true
+      showNotice(body.data.error ?? 'The repository scan failed.', 'error')
+    } else {
+      updateRepositoryAnalysis('not_scanned')
+      scanRequiresForce.value = true
+      showNotice('Repository scan cancelled.')
+    }
+  } catch {
+    showNotice('The local backend is unavailable.', 'error')
+  }
+}
+
+async function startScan() {
+  if (!repository.value || scanIsActive.value) return
+
+  startingScan.value = true
+  notice.value = ''
+  const force = scanRequiresForce.value || scanTask.value !== null || repository.value.analysisStatus === 'ready' || repository.value.analysisStatus === 'failed'
+
+  try {
+    const response = await fetch('/api/v1/repositories/current/scans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force }),
+    })
+    const body = (await response.json()) as { data?: ScanTask } & ErrorResponse
+
+    if (response.status === 409 && body.error?.details?.taskId) {
+      const taskId = body.error.details.taskId
+      if (body.error.code === 'SCAN_ALREADY_RUNNING') {
+        showNotice('A repository scan is already running.')
+        await refreshScanTask(taskId)
+      } else {
+        scanRequiresForce.value = true
+        showNotice('A previous scan already exists. Select “Scan again” to replace it.')
+      }
+      return
+    }
+
+    if (!response.ok || !body.data) {
+      showNotice(body.error?.message ?? 'The repository scan could not be started.', 'error')
+      return
+    }
+
+    scanTask.value = body.data
+    scanRequiresForce.value = false
+    updateRepositoryAnalysis('scanning')
+    showNotice('Repository scan started.', 'success')
+    scheduleScanPoll(body.data.taskId)
+  } catch {
+    showNotice('The local backend is unavailable.', 'error')
+  } finally {
+    startingScan.value = false
+  }
+}
+
+async function cancelScan() {
+  const taskId = scanTask.value?.taskId
+  if (!taskId || !scanIsActive.value) return
+
+  cancellingScan.value = true
+  try {
+    const response = await fetch(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+    if (!response.ok) {
+      const body = (await response.json()) as ErrorResponse
+      showNotice(body.error?.message ?? 'The repository scan could not be cancelled.', 'error')
+      return
+    }
+
+    clearScanPoll()
+    await refreshScanTask(taskId)
+  } catch {
+    showNotice('The local backend is unavailable.', 'error')
+  } finally {
+    cancellingScan.value = false
   }
 }
 
@@ -149,6 +315,7 @@ async function checkGithubConnection() {
 }
 
 onMounted(checkHealth)
+onBeforeUnmount(clearScanPoll)
 </script>
 
 <template>
@@ -233,6 +400,24 @@ onMounted(checkHealth)
                 <div><dt>.git size</dt><dd>{{ formatBytes(repository.gitDirectoryBytes) }}</dd></div>
                 <div><dt>Analysis</dt><dd>{{ repository.analysisStatus.replace('_', ' ') }}</dd></div>
               </dl>
+
+              <div class="scan-panel">
+                <div class="scan-copy">
+                  <strong>Repository scan</strong>
+                  <span>{{ scanProgressLabel }}</span>
+                  <progress v-if="scanTask && (scanIsActive || scanTask.status === 'completed')" :value="scanTask.progress.percent ?? 0" max="100">
+                    {{ scanTask.progress.percent ?? 0 }}%
+                  </progress>
+                </div>
+                <div class="scan-actions">
+                  <button v-if="scanIsActive" class="button" type="button" :disabled="cancellingScan" @click="cancelScan">
+                    {{ cancellingScan ? 'Cancelling…' : 'Cancel' }}
+                  </button>
+                  <button class="button button-primary" type="button" :disabled="startingScan || scanIsActive" @click="startScan">
+                    {{ scanButtonLabel }}
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
 

@@ -361,6 +361,7 @@ Suggested repository summary:
 
 Display Git commit history with a GitHub-like experience.
 
+- [x] Repository scan action and progress.
 - [ ] Commit timeline page.
 - [ ] Commit grouping by date.
 - [ ] Commit hash.
@@ -382,9 +383,9 @@ Display Git commit history with a GitHub-like experience.
 - [ ] Error state.
 - [ ] Refresh history action.
 
-**Milestone progress:** `0 / 20`  
-**Completion:** `0% of M2`  
-**Overall contribution:** `0.00%`
+**Milestone progress:** `1 / 21`
+**Completion:** `4.76% of M2`
+**Overall contribution:** `0.95%`
 
 ---
 
@@ -611,18 +612,18 @@ Prepare a stable first public release.
 |---|---:|---:|---:|---:|
 | M0 Project Shell | 5% | 6 / 8 | 75% | 3.75% |
 | M1 Repository Selection | 10% | 6 / 8 | 75% | 7.50% |
-| M2 Commit History | 20% | 0 / 20 | 0% | 0.00% |
+| M2 Commit History | 20% | 1 / 21 | 4.76% | 0.95% |
 | M3 Commit Size Analysis UI | 15% | 0 / 12 | 0% | 0.00% |
 | M4 Historical Object Explorer | 15% | 0 / 15 | 0% | 0.00% |
 | M5 Cleanup Selection | 10% | 0 / 10 | 0% | 0.00% |
 | M6 Rewrite Preview | 10% | 0 / 12 | 0% | 0.00% |
 | M7 Command Generator | 10% | 0 / 12 | 0% | 0.00% |
 | M8 Polish / Release | 5% | 0 / 13 | 0% | 0.00% |
-| **TOTAL** | **100%** | — | — | **11.25%** |
+| **TOTAL** | **100%** | — | — | **12.20%** |
 
 ## Current overall completion
 
-# `11.25%`
+# `12.20%`
 
 ---
 
@@ -643,6 +644,7 @@ Do not guess backend implementation details.
 | API-005 | Cleanup preview | affected refs + estimate | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-006 | Command generation | generated command plan | Contract drafted; not implemented | HTTP first | Contract Drafted |
 | API-007 | Current repository | restore and close the active repository | `GET` and `DELETE /api/v1/repositories/current` implemented and tested; frontend not connected | HTTP first | Ready for Integration |
+| API-008 | Repository scan | start, poll, display, and cancel a repository scan | Scan and task APIs implemented, tested, and connected to the overview | HTTP first | Integrated |
 
 ---
 
@@ -733,7 +735,7 @@ Describe behavior in prose only.
 | ID | Date | Module | Problem | Severity | Frontend Blocked | Status |
 |---|---|---|---|---|---|---|
 | BE-001 | 2026-10-06 | Repository selection | No HTTP route for repository selection and metadata | High | No | Resolved |
-| BE-002 | 2026-10-07 | Scan / repository exit | Replace the temporary always-success exit behavior when scan cancellation is implemented | Medium | No | Open |
+| BE-002 | 2026-10-07 | Scan / repository exit | Replace the temporary always-success exit behavior when scan cancellation is implemented | Medium | No | Resolved |
 | BE-003 | 2026-10-07 | Service boundary | Remove HTTP status codes from `RepositoriesSvr` before the scan/Wails service boundary is finalized | Medium | No | Open |
 
 Status options:
@@ -759,6 +761,7 @@ Status options:
 | FE-006 | Cleanup Selection | Todo | — | — | — |
 | FE-007 | Rewrite Preview | Todo | — | — | — |
 | FE-008 | Command Preview | Todo | — | — | — |
+| FE-009 | Repository Scan | Done | 2026-10-08 | 2026-10-08 | Start, poll, cancel, retry, progress, and terminal states integrated |
 
 Status options:
 
@@ -789,6 +792,26 @@ Important product and architecture decisions should be recorded here.
 # 12. Change Log
 
 The Agent should append a short entry after meaningful development sessions.
+
+## 2026-10-08
+
+### Added
+
+- Added the repository scan action to the repository overview.
+- Added task polling, progress display, cancellation, retry, and terminal-state handling.
+
+### Changed
+
+- Marked the scan and task endpoints complete in the frontend API checklist.
+- Resolved the scan-aware repository exit backend issue after integration testing.
+
+### Progress
+
+```text
+Before: 11.25%
+After:  12.20%
+Change: +0.95% — repository scanning is integrated with the overview.
+```
 
 ## 2026-10-07
 
@@ -871,9 +894,9 @@ At the end of each development session, the Agent should produce this summary.
 
 **Completed today**
 
-- [x] Initialize Vue 3 + TypeScript frontend.
-- [x] Implement the repository welcome page and application shell.
-- [x] Verify TypeScript and production build.
+- [x] Add the repository scan action to the overview.
+- [x] Connect scan creation, progress polling, cancellation, and retry.
+- [x] Verify the production build and the complete scan API flow.
 
 **In progress**
 
@@ -882,27 +905,27 @@ At the end of each development session, the Agent should produce this summary.
 
 **Blocked**
 
-- [ ] Repository picker integration.
+- [ ] Browser screenshot QA is unavailable because no controllable browser instance is connected.
 
 **Backend requests**
 
-- BE-001 HTTP repository selection, validation, and repository metadata.
+- None for repository scanning.
 
 **Known issues**
 
-- Repository, history, object analysis, and cleanup HTTP routes are not implemented yet.
-- Screenshot-based browser QA was unavailable in this environment; production compilation passed.
+- Commit history, object analysis, and cleanup APIs are not implemented yet.
+- The scan worker lifecycle still needs dedicated automated integration coverage.
 
 **Overall progress**
 
 ```text
-5%
+12.20%
 ```
 
 **Recommended next step**
 
 ```text
-Implement the P0 HTTP endpoints in internal/FRONTEND_API.md; then connect the repository picker and loading/error states.
+Implement the commit-list API, then connect the completed scan to the Commit history tab.
 ```
 
 ---

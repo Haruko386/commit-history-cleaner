@@ -186,6 +186,16 @@ p, h1, h2 { margin-top: 0; }
 .summary-grid dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; text-transform: capitalize; }
 .monospace { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
 
+.scan-panel { margin-top: 16px; padding-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border-muted); }
+.scan-copy { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.scan-copy strong { font-size: 14px; }
+.scan-copy span { color: var(--fg-muted); font-size: 12px; }
+.scan-copy progress { width: min(360px, 100%); height: 8px; margin-top: 4px; overflow: hidden; border: 0; border-radius: 999px; background: var(--border-muted); }
+.scan-copy progress::-webkit-progress-bar { border-radius: 999px; background: var(--border-muted); }
+.scan-copy progress::-webkit-progress-value { border-radius: 999px; background: var(--success-emphasis); }
+.scan-copy progress::-moz-progress-bar { border-radius: 999px; background: var(--success-emphasis); }
+.scan-actions { display: flex; align-items: center; gap: 8px; }
+
 .empty-row { min-height: 82px; padding: 16px; display: flex; align-items: center; gap: 12px; }
 .empty-row > svg { width: 20px; flex: 0 0 auto; fill: none; stroke: var(--fg-muted); stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
 .empty-row strong { display: block; margin-bottom: 3px; font-size: 14px; }
@@ -227,7 +237,8 @@ p, h1, h2 { margin-top: 0; }
   .tab-item { padding-inline: 9px; font-size: 12px; }
   .blank-state { min-height: 260px; padding-inline: 18px; }
   .blank-state h1 { font-size: 20px; }
-  .input-group, .summary-heading { align-items: stretch; flex-direction: column; }
+  .input-group, .summary-heading, .scan-panel { align-items: stretch; flex-direction: column; }
+  .scan-actions { justify-content: flex-end; }
   .summary-grid { grid-template-columns: 1fr; }
   .summary-grid > div, .summary-grid > div:nth-child(2n), .summary-grid > div:nth-last-child(-n + 2) { border-right: 0; border-bottom: 1px solid var(--border-default); }
   .summary-grid > div:last-child { border-bottom: 0; }

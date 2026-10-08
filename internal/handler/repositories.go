@@ -102,10 +102,13 @@ func (h *RepositoriesHandler) GetCurrentRepository(c *gin.Context) {
 func (h *RepositoriesHandler) ExitCurrentRepository(c *gin.Context) {
 	requestID := middleware.GetRequestID(c)
 
-	ok := h.repoSvr.ExitCurrentRepository()
+	ok, err := h.repoSvr.ExitCurrentRepository()
 	if !ok {
 		c.JSON(http.StatusNotFound, common.NewErrorResponse(common.InternalError, "can not close repo", false, requestID))
 		return
+	}
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, common.NewErrorResponse(common.InternalError, err.Error(), false, requestID))
 	}
 
 	c.Status(http.StatusNoContent)

@@ -11,11 +11,11 @@ import (
 )
 
 type TaskHandler struct {
-	taskSvr *service.TaskSvr
+	TaskSvr *service.TaskSvr
 }
 
 func NewTaskHandler(taskSvr *service.TaskSvr) *TaskHandler {
-	return &TaskHandler{taskSvr: taskSvr}
+	return &TaskHandler{TaskSvr: taskSvr}
 }
 
 func (h *TaskHandler) GetTask(c *gin.Context) {
@@ -27,7 +27,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		return
 	}
 
-	task, err := h.taskSvr.GetTask(taskId)
+	task, err := h.TaskSvr.GetTask(taskId)
 	if err != nil {
 		c.JSON(http.StatusNotFound, common.NewErrorResponse(common.TaskNotFound, err.Error(), false, requestId))
 		return
@@ -45,7 +45,7 @@ func (h *TaskHandler) CancelTask(c *gin.Context) {
 		return
 	}
 
-	if err := h.taskSvr.CancelTask(taskId); err != nil {
+	if err := h.TaskSvr.CancelTask(taskId); err != nil {
 		c.JSON(http.StatusNotFound, common.NewErrorResponse(common.TaskNotFound, err.Error(), false, requestId))
 		return
 	}
