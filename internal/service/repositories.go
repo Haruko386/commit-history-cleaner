@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"example.com/m/v2/internal/common"
+	"example.com/m/v2/internal/entity"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -20,11 +21,20 @@ import (
 type RepositoriesSvr struct {
 	mu      sync.RWMutex
 	current *RepoData
+	TaskSvr *TaskSvr
 }
 
-func NewRepositoriesSvr() *RepositoriesSvr {
-	return &RepositoriesSvr{}
+func NewRepositoriesSvr(taskSvr *TaskSvr) *RepositoriesSvr {
+	return &RepositoriesSvr{TaskSvr: taskSvr}
 }
+
+var (
+	ErrNoRepositoryOpen     = errors.New("no repository has been opened")
+	ErrScanAlreadyRunning   = errors.New("repository scan has already been running")
+	ErrScanAlreadyQueued    = errors.New("repository scan has already been queued")
+	ErrScanAlreadyCompleted = errors.New("repository scan has already been completed")
+	ErrScanAlreadyCancelled = errors.New("repository scan has already been cancelled")
+)
 
 type RepoData struct {
 	Name              string    `json:"name"`
@@ -205,4 +215,88 @@ func (s *RepositoriesSvr) ExitCurrentRepository() bool {
 	// TODO: waiting for `scan` API to be done
 	s.current = nil
 	return true
+}
+
+func (s *RepositoriesSvr) ScanRepository(force bool) (*entity.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// check if repo is opened
+	if s.current == nil {
+		return &entity.Task{}, ErrNoRepositoryOpen
+	}
+
+	s.TaskSvr.mu.Lock()
+	defer s.TaskSvr.mu.Unlock()
+
+	// if this repo has no task
+	repoID := common.GenerateRepoID(s.current.Path) // every same repo should have the sam repoID
+	existedTaskID, ok := s.TaskSvr.repoTaskList[repoID]
+	if !ok { // this repo has no task, create one task for the repo
+		newTask := createNewTask()
+
+		s.current.AnalysisStatus = "scanning"
+		s.TaskSvr.repoTaskList[repoID] = newTask.TaskID
+		s.TaskSvr.taskList[newTask.TaskID] = newTask
+
+		// TODO: 好像没做发送到队列？应该如果放内存的话得去管道里，应该在 Task 里做
+		return newTask, nil
+	}
+
+	// taskID is existed, check task's status
+	task, ok := s.TaskSvr.taskList[existedTaskID]
+	if !ok { // no task, create the task
+		newTask := createNewTask()
+
+		s.current.AnalysisStatus = "scanning"
+		s.TaskSvr.repoTaskList[repoID] = newTask.TaskID
+		s.TaskSvr.taskList[newTask.TaskID] = newTask
+
+		// TODO: as top one
+		return newTask, nil
+	}
+
+	// if existed
+	if task.Status == entity.Queued {
+		return task, ErrScanAlreadyQueued
+	} else if task.Status == entity.Running {
+		return task, ErrScanAlreadyRunning
+	}
+
+	// if not running or queued and `force`(completed or canceled)
+	if force {
+		delete(s.TaskSvr.taskList, s.TaskSvr.repoTaskList[repoID])
+		newTask := createNewTask()
+		s.TaskSvr.repoTaskList[repoID] = newTask.TaskID
+		s.TaskSvr.taskList[newTask.TaskID] = newTask
+		s.current.AnalysisStatus = "scanning"
+		return newTask, nil
+	}
+
+	switch task.Status {
+	case entity.Cancelled:
+		return task, ErrScanAlreadyCancelled
+	default:
+		return task, ErrScanAlreadyCompleted
+	}
+}
+
+// createNewTask create a new task
+func createNewTask() *entity.Task {
+	taskID := common.GenerateTaskID()
+	task := &entity.Task{
+		TaskID: taskID,
+		Type:   entity.RepositoryScan,
+		Status: entity.Queued,
+		Progress: entity.Progress{
+			Phase:   entity.Queued,
+			Current: 0,
+			Total:   nil,
+			Percent: nil,
+		},
+		CreatedAt:  new(time.Now()),
+		StartedAt:  nil,
+		FinishedAt: nil,
+	}
+	return task
 }

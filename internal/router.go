@@ -8,10 +8,15 @@ import (
 type Router struct {
 	healthHandler *handler.HealthHandler
 	repoHandler   *handler.RepositoriesHandler
+	taskHandler   *handler.TaskHandler
 }
 
-func NewRouter(healthHandler *handler.HealthHandler, repoHandler *handler.RepositoriesHandler) *Router {
-	return &Router{healthHandler: healthHandler, repoHandler: repoHandler}
+func NewRouter(
+	healthHandler *handler.HealthHandler,
+	repoHandler *handler.RepositoriesHandler,
+	taskHandler *handler.TaskHandler,
+) *Router {
+	return &Router{healthHandler: healthHandler, repoHandler: repoHandler, taskHandler: taskHandler}
 }
 
 func (r *Router) Setup(e *gin.Engine) {
@@ -24,7 +29,15 @@ func (r *Router) Setup(e *gin.Engine) {
 			repositories.POST("open", r.repoHandler.OpenRepository)
 			repositories.GET("current", r.repoHandler.GetCurrentRepository)
 			repositories.DELETE("current", r.repoHandler.ExitCurrentRepository)
+			repositories.POST("current/scans", r.repoHandler.ScanRepository)
+
 			//repositories.GET("recent")
+		}
+
+		tasks := api.Group("/tasks")
+		{
+			tasks.GET("/:taskID", r.taskHandler.GetTask)
+			tasks.DELETE("/:taskID", r.taskHandler.CancelTask)
 		}
 	}
 }
