@@ -1,6 +1,9 @@
 package entity
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // task type
 const (
@@ -24,6 +27,10 @@ type Task struct {
 	CreatedAt  *time.Time `json:"createdAt"`
 	StartedAt  *time.Time `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
+	Error      *string    `json:"error,omitempty"`
+
+	Ctx    context.Context    `json:"-"`
+	Cancel context.CancelFunc `json:"-"`
 }
 
 type Progress struct {

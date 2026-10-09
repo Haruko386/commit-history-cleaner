@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -10,17 +11,31 @@ import (
 
 type TaskSvr struct {
 	mu           sync.Mutex
+	ctx          context.Context
 	taskList     map[string]*entity.Task
 	repoTaskList map[string]string
 
-	worker entity.Worker
+	worker *WorkerSvr
 }
 
 func NewTaskSvr() *TaskSvr {
 	return &TaskSvr{
+		mu:           sync.Mutex{},
+		ctx:          context.Background(),
 		taskList:     make(map[string]*entity.Task),
 		repoTaskList: make(map[string]string),
+		worker:       NewWorker(),
 	}
+}
+
+func (s *TaskSvr) Start() {
+	go func() {
+		s.worker.ConsumeTask(s.ctx)
+	}()
+}
+
+func (s *TaskSvr) AddTask(task *entity.Task, repo *RepoData, taskMu *sync.Mutex, repoMu *sync.RWMutex) {
+	s.worker.jobQueue <- Job{task: task, repo: repo, taskMu: taskMu, repoMu: repoMu}
 }
 
 func (s *TaskSvr) GetTask(taskId string) (*entity.Task, error) {
@@ -32,7 +47,28 @@ func (s *TaskSvr) GetTask(taskId string) (*entity.Task, error) {
 		return nil, fmt.Errorf("task %s not exist", taskId)
 	}
 
-	return task, nil
+	cpTask := &entity.Task{
+		TaskID: task.TaskID,
+		Type:   task.Type,
+		Status: task.Status,
+		Progress: entity.Progress{
+			Phase:   task.Progress.Phase,
+			Current: task.Progress.Current,
+			Total:   task.Progress.Total,
+			Percent: task.Progress.Percent,
+		},
+		CreatedAt:  task.CreatedAt,
+		StartedAt:  task.StartedAt,
+		FinishedAt: task.FinishedAt,
+	}
+
+	if task.Error != nil {
+		cpTask.Error = task.Error
+	}
+
+	task = nil
+
+	return cpTask, nil
 }
 
 func (s *TaskSvr) CancelTask(taskId string) error {
@@ -45,8 +81,11 @@ func (s *TaskSvr) CancelTask(taskId string) error {
 	}
 
 	switch task.Status {
-	case "queued", "running":
-		task.Status = "cancelled"
+	case entity.Queued, entity.Running:
+		if task.Cancel != nil {
+			task.Cancel()
+		}
+		task.Status = entity.Cancelled
 		task.Progress.Phase = entity.Cancelled
 		task.FinishedAt = new(time.Now())
 	default:

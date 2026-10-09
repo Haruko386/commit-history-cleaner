@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,11 +22,11 @@ import (
 type RepositoriesSvr struct {
 	mu      sync.RWMutex
 	current *RepoData
-	TaskSvr *TaskSvr
+	taskSvr *TaskSvr
 }
 
 func NewRepositoriesSvr(taskSvr *TaskSvr) *RepositoriesSvr {
-	return &RepositoriesSvr{TaskSvr: taskSvr}
+	return &RepositoriesSvr{taskSvr: taskSvr}
 }
 
 var (
@@ -95,7 +96,7 @@ func (s *RepositoriesSvr) OpenRepository(path string) (string, *RepoData, error)
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
 			repoData.CommitCount = 0
 			repoData.WorkingTreeStatus = "unborn"
-			repoData.AnalysisStatus = "not_scanned"
+			repoData.AnalysisStatus = entity.RepoNotScanned
 			repoData.GitDirectoryBytes, err = dirSize(filepath.Join(path, ".git"))
 			if err != nil {
 				return common.InternalError, nil, fmt.Errorf("checking git repository size: %w", err)
@@ -163,7 +164,7 @@ func (s *RepositoriesSvr) OpenRepository(path string) (string, *RepoData, error)
 		return common.InternalError, nil, fmt.Errorf("checking git repository size: %w", err)
 	}
 	repoData.GitDirectoryBytes = repoSize
-	repoData.AnalysisStatus = "not_scanned"
+	repoData.AnalysisStatus = entity.RepoNotScanned
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,21 +202,44 @@ func (s *RepositoriesSvr) GetCurrentRepository() (int, *RepoData, string) {
 	defer s.mu.RUnlock()
 
 	if s.current != nil {
-		return http.StatusOK, s.current, ""
+		cpRepoData := &RepoData{
+			Name:              s.current.Name,
+			Path:              s.current.Path,
+			Branch:            s.current.Branch,
+			DetachedHead:      s.current.DetachedHead,
+			Head:              s.current.Head,
+			CommitCount:       s.current.CommitCount,
+			WorkingTreeStatus: s.current.WorkingTreeStatus,
+			GitDirectoryBytes: s.current.GitDirectoryBytes,
+			AnalysisStatus:    s.current.AnalysisStatus,
+			OpenedAt:          s.current.OpenedAt,
+		}
+		return http.StatusOK, cpRepoData, ""
 	}
 	return http.StatusNotFound, nil, common.NoRepositoryOpen
 }
 
-func (s *RepositoriesSvr) ExitCurrentRepository() bool {
+func (s *RepositoriesSvr) ExitCurrentRepository() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.current == nil {
-		return true
+		return true, nil
 	}
-	// TODO: waiting for `scan` API to be done
+
+	if s.current.AnalysisStatus == entity.RepoNotScanned || s.current.AnalysisStatus == entity.RepoScanning {
+		repoID := common.GenerateRepoID(s.current.Path)
+		if taskID, ok := s.taskSvr.repoTaskList[repoID]; ok {
+			if err := s.taskSvr.CancelTask(taskID); err != nil {
+				return false, fmt.Errorf("cancel task err: %w", err)
+			}
+		}
+		s.current = nil
+		return true, nil
+	}
+
 	s.current = nil
-	return true
+	return true, nil
 }
 
 func (s *RepositoriesSvr) ScanRepository(force bool) (*entity.Task, error) {
@@ -227,33 +251,33 @@ func (s *RepositoriesSvr) ScanRepository(force bool) (*entity.Task, error) {
 		return &entity.Task{}, ErrNoRepositoryOpen
 	}
 
-	s.TaskSvr.mu.Lock()
-	defer s.TaskSvr.mu.Unlock()
+	s.taskSvr.mu.Lock()
+	defer s.taskSvr.mu.Unlock()
 
 	// if this repo has no task
 	repoID := common.GenerateRepoID(s.current.Path) // every same repo should have the sam repoID
-	existedTaskID, ok := s.TaskSvr.repoTaskList[repoID]
+	existedTaskID, ok := s.taskSvr.repoTaskList[repoID]
 	if !ok { // this repo has no task, create one task for the repo
-		newTask := createNewTask()
+		newTask := createNewTask(s.taskSvr.ctx)
 
-		s.current.AnalysisStatus = "scanning"
-		s.TaskSvr.repoTaskList[repoID] = newTask.TaskID
-		s.TaskSvr.taskList[newTask.TaskID] = newTask
+		s.current.AnalysisStatus = entity.RepoNotScanned
+		s.taskSvr.repoTaskList[repoID] = newTask.TaskID
+		s.taskSvr.taskList[newTask.TaskID] = newTask
 
-		// TODO: 好像没做发送到队列？应该如果放内存的话得去管道里，应该在 Task 里做
+		s.taskSvr.AddTask(newTask, s.current, &s.taskSvr.mu, &s.mu)
 		return newTask, nil
 	}
 
 	// taskID is existed, check task's status
-	task, ok := s.TaskSvr.taskList[existedTaskID]
+	task, ok := s.taskSvr.taskList[existedTaskID]
 	if !ok { // no task, create the task
-		newTask := createNewTask()
+		newTask := createNewTask(s.taskSvr.ctx)
 
-		s.current.AnalysisStatus = "scanning"
-		s.TaskSvr.repoTaskList[repoID] = newTask.TaskID
-		s.TaskSvr.taskList[newTask.TaskID] = newTask
+		s.current.AnalysisStatus = entity.RepoNotScanned
+		s.taskSvr.repoTaskList[repoID] = newTask.TaskID
+		s.taskSvr.taskList[newTask.TaskID] = newTask
 
-		// TODO: as top one
+		s.taskSvr.AddTask(newTask, s.current, &s.taskSvr.mu, &s.mu)
 		return newTask, nil
 	}
 
@@ -266,11 +290,12 @@ func (s *RepositoriesSvr) ScanRepository(force bool) (*entity.Task, error) {
 
 	// if not running or queued and `force`(completed or canceled)
 	if force {
-		delete(s.TaskSvr.taskList, s.TaskSvr.repoTaskList[repoID])
-		newTask := createNewTask()
-		s.TaskSvr.repoTaskList[repoID] = newTask.TaskID
-		s.TaskSvr.taskList[newTask.TaskID] = newTask
-		s.current.AnalysisStatus = "scanning"
+		delete(s.taskSvr.taskList, s.taskSvr.repoTaskList[repoID])
+		newTask := createNewTask(s.taskSvr.ctx)
+		s.taskSvr.repoTaskList[repoID] = newTask.TaskID
+		s.taskSvr.taskList[newTask.TaskID] = newTask
+		s.current.AnalysisStatus = entity.RepoNotScanned
+		s.taskSvr.AddTask(newTask, s.current, &s.taskSvr.mu, &s.mu)
 		return newTask, nil
 	}
 
@@ -283,7 +308,8 @@ func (s *RepositoriesSvr) ScanRepository(force bool) (*entity.Task, error) {
 }
 
 // createNewTask create a new task
-func createNewTask() *entity.Task {
+func createNewTask(parentCtx context.Context) *entity.Task {
+	ctx, cancel := context.WithCancel(parentCtx)
 	taskID := common.GenerateTaskID()
 	task := &entity.Task{
 		TaskID: taskID,
@@ -298,6 +324,9 @@ func createNewTask() *entity.Task {
 		CreatedAt:  new(time.Now()),
 		StartedAt:  nil,
 		FinishedAt: nil,
+
+		Ctx:    ctx,
+		Cancel: cancel,
 	}
 	return task
 }

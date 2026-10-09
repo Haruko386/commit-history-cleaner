@@ -36,6 +36,8 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	taskHandler.TaskSvr.Start()
+
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("start backend: %v", err)

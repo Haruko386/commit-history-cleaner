@@ -804,9 +804,9 @@ CleanupService
 
 ### P1：历史与对象分析
 
-- [ ] `POST /api/v1/repositories/current/scans`
-- [ ] `GET /api/v1/tasks/{taskId}`
-- [ ] `DELETE /api/v1/tasks/{taskId}`
+- [x] `POST /api/v1/repositories/current/scans`
+- [x] `GET /api/v1/tasks/{taskId}`
+- [x] `DELETE /api/v1/tasks/{taskId}`
 - [ ] `GET /api/v1/repositories/current/commits`
 - [ ] `GET /api/v1/repositories/current/commits/{sha}`
 - [ ] `GET /api/v1/repositories/current/commits/{sha}/files`
