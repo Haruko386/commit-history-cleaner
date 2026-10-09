@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  web:
+    name: Build web frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Package web build
+        working-directory: frontend/dist
+        run: zip -r "$GITHUB_WORKSPACE/CHC-web.zip" .
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHC-web
+          path: CHC-web.zip
+          if-no-files-found: error
+
+  desktop:
+    name: Build desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-amd64
+            os: windows-latest
+            platform: windows/amd64
+            artifact: CHC-windows-amd64
+            paths: desktop/build/bin/CHC.exe
+          - name: macos-universal
+            os: macos-latest
+            platform: darwin/universal
+            artifact: CHC-macos-universal
+            paths: desktop/build/bin/CHC-macos-universal.zip
+          - name: linux-amd64
+            os: ubuntu-22.04
+            platform: linux/amd64
+            artifact: CHC-linux-amd64
+            paths: desktop/build/bin/CHC
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Detect Wails readiness
+        id: wails
+        shell: bash
+        run: |
+          if [ -f desktop/wails.json ] && grep -rq --include='*.go' 'wails\.Run' desktop; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Wails desktop entrypoint is not implemented yet; skipping desktop build."
+          fi
+
+      - name: Set up Go
+        if: steps.wails.outputs.ready == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Set up Node.js
+        if: steps.wails.outputs.ready == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux dependencies
+        if: steps.wails.outputs.ready == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Build frontend
+        if: steps.wails.outputs.ready == 'true'
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend assets
+        if: steps.wails.outputs.ready == 'true'
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install Wails CLI
+        if: steps.wails.outputs.ready == 'true'
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Add Go bin to PATH
+        if: steps.wails.outputs.ready == 'true'
+        shell: bash
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build application
+        if: steps.wails.outputs.ready == 'true'
+        working-directory: desktop
+        run: wails build -platform ${{ matrix.platform }} -clean
+
+      - name: Package macOS app
+        if: steps.wails.outputs.ready == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd desktop/build/bin
+          ditto -c -k --keepParent CHC.app CHC-macos-universal.zip
+          rm -rf CHC.app
+
+      - name: Upload desktop artifact
+        if: steps.wails.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.paths }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs:
+      - web
+      - desktop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -laR dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
