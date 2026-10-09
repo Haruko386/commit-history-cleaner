@@ -2,12 +2,16 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +39,12 @@ var (
 	ErrScanAlreadyQueued    = errors.New("repository scan has already been queued")
 	ErrScanAlreadyCompleted = errors.New("repository scan has already been completed")
 	ErrScanAlreadyCancelled = errors.New("repository scan has already been cancelled")
+	ErrRepositoryNotScanned = errors.New("repository has not been scanned")
+	ErrInvalidCommitCursor  = errors.New("invalid commit cursor")
+	ErrUnsupportedRef       = errors.New("unsupported ref")
+	ErrInvalidCommitSHA     = errors.New("invalid commit SHA")
+	ErrCommitNotFound       = errors.New("commit not found")
+	ErrInvalidCommitQuery   = errors.New("invalid commit file query")
 )
 
 // TODO do a refactor for repo struct, create an entity for it
@@ -119,9 +129,7 @@ func (s *RepositoriesSvr) OpenRepository(path string) (string, *RepoData, error)
 	}
 
 	// commit count
-	iter, err := r.Log(&git.LogOptions{
-		From: ref.Hash(),
-	})
+	iter, err := r.Log(&git.LogOptions{All: true})
 	if err != nil {
 		return common.InternalError, nil, fmt.Errorf("counting git history error: %w", err)
 	}
@@ -329,4 +337,414 @@ func createNewTask(parentCtx context.Context) *entity.Task {
 		Cancel: cancel,
 	}
 	return task
+}
+
+func (s *RepositoriesSvr) GetCurrentCommits(commitQuery *entity.CommitsQuery) ([]entity.CommitSummary, string, error) {
+	s.mu.RLock()
+	if s.current == nil {
+		s.mu.RUnlock()
+		return []entity.CommitSummary{}, "", ErrNoRepositoryOpen
+	}
+	repoID := common.GenerateRepoID(s.current.Path)
+	analysisStatus := s.current.AnalysisStatus
+	headSHA := ""
+	if s.current.Head != nil {
+		headSHA = *s.current.Head
+	}
+	s.mu.RUnlock()
+
+	s.taskSvr.worker.mu.Lock()
+	commitInfos, ok := s.taskSvr.worker.scannedRepoInfo.RepoCommits[repoID]
+	s.taskSvr.worker.mu.Unlock()
+	if !ok {
+		return nil, "", fmt.Errorf("%w for repo %s", ErrRepositoryNotScanned, repoID)
+	}
+
+	cursor, err := decodeIndexCursor(commitQuery.Cursor)
+	if err != nil || cursor < 0 {
+		return nil, "", fmt.Errorf("%w for repo %s: %v", ErrInvalidCommitCursor, repoID, err)
+	}
+
+	limit := commitQuery.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	ref := strings.TrimSpace(commitQuery.Ref)
+	startSHA := headSHA
+	if ref != "" && ref != "HEAD" {
+		startSHA = ""
+		for _, commitInfo := range commitInfos {
+			for _, branch := range commitInfo.Refs.Branches {
+				if ref == branch || ref == "refs/heads/"+branch {
+					startSHA = commitInfo.SHA
+					break
+				}
+			}
+			for _, tag := range commitInfo.Refs.Tags {
+				if ref == tag || ref == "refs/tags/"+tag {
+					startSHA = commitInfo.SHA
+					break
+				}
+			}
+			if startSHA != "" {
+				break
+			}
+		}
+
+		if startSHA == "" {
+			for _, commitInfo := range commitInfos {
+				if strings.HasPrefix(commitInfo.SHA, ref) {
+					if startSHA != "" && startSHA != commitInfo.SHA {
+						return nil, "", fmt.Errorf("%w: %s is ambiguous", ErrUnsupportedRef, ref)
+					}
+					startSHA = commitInfo.SHA
+				}
+			}
+		}
+		if startSHA == "" {
+			return nil, "", fmt.Errorf("%w: %s", ErrUnsupportedRef, ref)
+		}
+	}
+
+	commitBySHA := make(map[string]entity.CommitInfo, len(commitInfos))
+	for _, commitInfo := range commitInfos {
+		commitBySHA[commitInfo.SHA] = commitInfo
+	}
+	reachable := make(map[string]struct{})
+	stack := []string{startSHA}
+	for len(stack) > 0 {
+		sha := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, exists := reachable[sha]; exists {
+			continue
+		}
+		commitInfo, exists := commitBySHA[sha]
+		if !exists {
+			continue
+		}
+		reachable[sha] = struct{}{}
+		stack = append(stack, commitInfo.ParentSHAs...)
+	}
+
+	matched := 0
+	var commitSummaries []entity.CommitSummary
+
+	for _, commitInfo := range commitInfos {
+		if _, exists := reachable[commitInfo.SHA]; !exists {
+			continue
+		}
+		if !matchQuery(&commitInfo, commitQuery) {
+			continue
+		}
+
+		if matched < cursor {
+			matched++
+			continue
+		}
+		if len(commitSummaries) == limit {
+			return commitSummaries, encodeIndexCursor(cursor + len(commitSummaries)), nil
+		}
+
+		commitSummary := &entity.CommitSummary{
+			SHA:      commitInfo.SHA,
+			ShortSHA: commitInfo.SHA[:7],
+			Subject:  strings.Split(commitInfo.Message, "\n")[0],
+			Author: entity.Author{
+				Name:  commitInfo.AuthorName,
+				Email: commitInfo.AuthorEmail,
+			},
+			AuthoredAt:     commitInfo.AuthoredAt,
+			CommittedAt:    commitInfo.CommittedAt,
+			Parents:        commitInfo.ParentSHAs,
+			Refs:           commitInfo.Refs,
+			Stats:          commitInfo.Stats,
+			AnalysisStatus: analysisStatus,
+		}
+		commitSummaries = append(commitSummaries, *commitSummary)
+		matched++
+	}
+
+	return commitSummaries, "", nil
+}
+
+// encodeIndexCursor encode index to cursor
+func encodeIndexCursor(index int) string {
+	s := strconv.Itoa(index)
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
+}
+
+// decodeIndexCursor decode cursor to index
+func decodeIndexCursor(cursor *string) (int, error) {
+	if cursor == nil || *cursor == "" {
+		return 0, nil
+	}
+	data, err := base64.RawURLEncoding.DecodeString(*cursor)
+	if err != nil {
+		return 0, err
+	}
+	index, err := strconv.Atoi(string(data))
+	if err != nil {
+		return 0, err
+	}
+	return index, nil
+}
+
+// matchQuery match the query
+func matchQuery(commitInfo *entity.CommitInfo, query *entity.CommitsQuery) bool {
+	if query.Author != nil {
+		author := strings.ToLower(*query.Author)
+		if !strings.Contains(strings.ToLower(commitInfo.AuthorName), author) && !strings.Contains(strings.ToLower(commitInfo.AuthorEmail), author) {
+			return false
+		}
+	}
+	if query.Since != nil {
+		if commitInfo.CommittedAt.Before(*query.Since) {
+			return false
+		}
+	}
+	if query.Until != nil {
+		if commitInfo.CommittedAt.After(*query.Until) {
+			return false
+		}
+	}
+	if query.Query != nil {
+		keyword := strings.ToLower(*query.Query)
+		if !strings.Contains(strings.ToLower(commitInfo.Message), keyword) && !strings.Contains(strings.ToLower(commitInfo.SHA), keyword) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *RepositoriesSvr) GetCommit(sha string) (*entity.CommitInfo, error) {
+	sha = strings.ToLower(strings.TrimSpace(sha))
+	if !isFullCommitSHA(sha) {
+		return nil, ErrInvalidCommitSHA
+	}
+
+	s.mu.RLock()
+	if s.current == nil {
+		s.mu.RUnlock()
+		return nil, ErrNoRepositoryOpen
+	}
+	repoID := common.GenerateRepoID(s.current.Path)
+	s.mu.RUnlock()
+
+	s.taskSvr.worker.mu.Lock()
+	defer s.taskSvr.worker.mu.Unlock()
+
+	repoCommitSHAs, ok := s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs[repoID]
+	if !ok {
+		return nil, fmt.Errorf("%w for repo %s", ErrRepositoryNotScanned, repoID)
+	}
+	if _, ok := repoCommitSHAs[sha]; !ok {
+		return nil, fmt.Errorf("%w: %s", ErrCommitNotFound, sha)
+	}
+	commitInfo, ok := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+	if !ok {
+		return nil, fmt.Errorf("commit cache is missing SHA %s", sha)
+	}
+
+	return &commitInfo, nil
+}
+
+func (s *RepositoriesSvr) GetFiles(sha string, fileQuery entity.CommitFileQuery) ([]entity.CommitFile, string, error) {
+	sha = strings.ToLower(strings.TrimSpace(sha))
+	if !isFullCommitSHA(sha) {
+		return nil, "", ErrInvalidCommitSHA
+	}
+
+	s.mu.RLock()
+	if s.current == nil {
+		s.mu.RUnlock()
+		return nil, "", ErrNoRepositoryOpen
+	}
+	repoID := common.GenerateRepoID(s.current.Path)
+	s.mu.RUnlock()
+
+	s.taskSvr.worker.mu.Lock()
+	repoCommitSHAs, ok := s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs[repoID]
+	if !ok {
+		s.taskSvr.worker.mu.Unlock()
+		return nil, "", fmt.Errorf("%w for repo %s", ErrRepositoryNotScanned, repoID)
+	}
+	if _, ok := repoCommitSHAs[sha]; !ok {
+		s.taskSvr.worker.mu.Unlock()
+		return nil, "", fmt.Errorf("%w: %s", ErrCommitNotFound, sha)
+	}
+	cachedFiles, ok := s.taskSvr.worker.scannedRepoInfo.CommitsFiles[sha]
+	if !ok {
+		s.taskSvr.worker.mu.Unlock()
+		return nil, "", fmt.Errorf("commit file cache is missing SHA %s", sha)
+	}
+	commitFiles := append([]entity.CommitFile(nil), cachedFiles...)
+	s.taskSvr.worker.mu.Unlock()
+
+	limit := fileQuery.Limit
+	if limit < 0 {
+		return nil, "", ErrInvalidCommitQuery
+	}
+	if limit == 0 {
+		limit = 100
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	var sortName, order string
+
+	if fileQuery.Order != nil {
+		order = strings.ToLower(strings.TrimSpace(*fileQuery.Order))
+	} else {
+		order = "desc"
+	}
+
+	if fileQuery.Sort != nil {
+		sortName = strings.TrimSpace(*fileQuery.Sort)
+	} else {
+		sortName = "introducedBytes"
+	}
+	if order != "asc" && order != "desc" {
+		return nil, "", ErrInvalidCommitQuery
+	}
+	switch sortName {
+	case "introducedBytes", "path", "newBytes", "additions", "deletions":
+	default:
+		return nil, "", ErrInvalidCommitQuery
+	}
+
+	cursor := 0
+	if fileQuery.Cursor != nil && *fileQuery.Cursor != "" {
+		data, err := base64.RawURLEncoding.DecodeString(*fileQuery.Cursor)
+		if err != nil {
+			return nil, "", ErrInvalidCommitCursor
+		}
+		parts := strings.Split(string(data), ":")
+		if len(parts) != 4 || parts[1] != sha || parts[2] != sortName || parts[3] != order {
+			return nil, "", ErrInvalidCommitCursor
+		}
+		cursor, err = strconv.Atoi(parts[0])
+		if err != nil || cursor < 0 {
+			return nil, "", ErrInvalidCommitCursor
+		}
+	}
+
+	sortCommitFiles(commitFiles, sortName, order)
+
+	start := cursor
+	if start > len(commitFiles) {
+		return nil, "", ErrInvalidCommitCursor
+	}
+	end := min(limit+cursor, len(commitFiles))
+	var newCursor string
+	if end == len(commitFiles) {
+		newCursor = ""
+	} else {
+		cursorValue := fmt.Sprintf("%d:%s:%s:%s", end, sha, sortName, order)
+		newCursor = base64.RawURLEncoding.EncodeToString([]byte(cursorValue))
+	}
+
+	return commitFiles[start:end], newCursor, nil
+}
+
+func isFullCommitSHA(sha string) bool {
+	if len(sha) != 40 {
+		return false
+	}
+	_, err := hex.DecodeString(sha)
+	return err == nil
+}
+
+func sortCommitFiles(commitFiles []entity.CommitFile, sortName, order string) {
+	if len(commitFiles) == 0 {
+		return
+	}
+	switch sortName {
+	case "introducedBytes":
+		if order == "asc" {
+			sort.Slice(commitFiles, func(i, j int) bool {
+				return commitFiles[i].IntroducedBytes < commitFiles[j].IntroducedBytes
+			})
+		} else {
+			sort.Slice(commitFiles, func(i, j int) bool {
+				return commitFiles[i].IntroducedBytes > commitFiles[j].IntroducedBytes
+			})
+		}
+	case "path":
+		if order == "asc" {
+			sort.Slice(commitFiles, func(i, j int) bool {
+				return commitFiles[i].Path < commitFiles[j].Path
+			})
+		} else {
+			sort.Slice(commitFiles, func(i, j int) bool {
+				return commitFiles[i].Path > commitFiles[j].Path
+			})
+		}
+	case "newBytes":
+		sort.Slice(commitFiles, func(i, j int) bool {
+			a, b := commitFiles[i].NewBytes, commitFiles[j].NewBytes
+			if a == nil && b == nil {
+				return commitFiles[i].Path < commitFiles[j].Path
+			}
+			if a == nil {
+				return false
+			}
+			if b == nil {
+				return true
+			}
+			if *a == *b {
+				return commitFiles[i].Path < commitFiles[j].Path
+			}
+			if order == "asc" {
+				return *a < *b
+			}
+			return *a > *b
+		})
+	case "additions":
+		sort.Slice(commitFiles, func(i, j int) bool {
+			a, b := commitFiles[i].Additions, commitFiles[j].Additions
+			if a == nil && b == nil {
+				return commitFiles[i].Path < commitFiles[j].Path
+			}
+			if a == nil {
+				return false
+			}
+			if b == nil {
+				return true
+			}
+			if *a == *b {
+				return commitFiles[i].Path < commitFiles[j].Path
+			}
+			if order == "asc" {
+				return *a < *b
+			}
+			return *a > *b
+		})
+	case "deletions":
+		sort.Slice(commitFiles, func(i, j int) bool {
+			a, b := commitFiles[i].Deletions, commitFiles[j].Deletions
+			if a == nil && b == nil {
+				return commitFiles[i].Path < commitFiles[j].Path
+			}
+			if a == nil {
+				return false
+			}
+			if b == nil {
+				return true
+			}
+			if *a == *b {
+				return commitFiles[i].Path < commitFiles[j].Path
+			}
+			if order == "asc" {
+				return *a < *b
+			}
+			return *a > *b
+		})
+	default:
+		return
+	}
 }

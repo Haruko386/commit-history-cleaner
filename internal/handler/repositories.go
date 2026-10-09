@@ -3,8 +3,10 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/Haruko386/commit-history-cleaner/internal/common"
+	"github.com/Haruko386/commit-history-cleaner/internal/entity"
 	"github.com/Haruko386/commit-history-cleaner/internal/middleware"
 	"github.com/Haruko386/commit-history-cleaner/internal/service"
 	"github.com/gin-gonic/gin"
@@ -157,4 +159,120 @@ func (h *RepositoriesHandler) ScanRepository(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, common.NewSuccessResponse(data, requestID))
+}
+
+func (h *RepositoriesHandler) GetCurrentCommits(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	query := entity.CommitsQuery{}
+	if err := c.ShouldBindQuery(&query); err != nil {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Query parameters must be valid.", false, requestID))
+		return
+	}
+
+	if query.Since != nil && query.Until != nil && query.Since.After(*query.Until) {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "start time should smaller than end time", false, requestID))
+		return
+	}
+
+	data, cursor, err := h.repoSvr.GetCurrentCommits(&query)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNoRepositoryOpen):
+			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.NoRepositoryOpen, "No repository opened.", false, requestID))
+		case errors.Is(err, service.ErrRepositoryNotScanned):
+			c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryNotScanned, "Scan the repository before requesting commits.", false, requestID))
+		case errors.Is(err, service.ErrInvalidCommitCursor):
+			c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "The commit cursor is invalid.", false, requestID))
+		case errors.Is(err, service.ErrUnsupportedRef):
+			c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "The ref does not exist or is ambiguous.", false, requestID))
+		default:
+			c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.InternalError, "The commit list could not be loaded.", false, requestID))
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, common.NewSuccessResponseWithCursor(data, requestID, cursor, cursor != ""))
+}
+
+func (h *RepositoriesHandler) GetCommit(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	sha := strings.TrimSpace(c.Param("sha"))
+	if sha == "" {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Commit SHA is required.", false, requestID))
+		return
+	}
+
+	commitInfo, err := h.repoSvr.GetCommit(sha)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidCommitSHA):
+			c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Commit SHA must be a full 40-character hexadecimal value.", false, requestID))
+		case errors.Is(err, service.ErrNoRepositoryOpen):
+			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.NoRepositoryOpen, "No repository opened.", false, requestID))
+		case errors.Is(err, service.ErrRepositoryNotScanned):
+			c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryNotScanned, "Scan the repository before requesting a commit.", false, requestID))
+		case errors.Is(err, service.ErrCommitNotFound):
+			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.CommitNotFound, "The commit was not found in the current repository.", false, requestID))
+		default:
+			c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.InternalError, "The commit could not be loaded.", false, requestID))
+		}
+		return
+	}
+
+	data := map[string]any{
+		"sha":      commitInfo.SHA,
+		"shortSha": commitInfo.SHA[:7],
+		"subject":  strings.Split(commitInfo.Message, "\n")[0],
+		"author": map[string]any{
+			"name":  commitInfo.AuthorName,
+			"email": commitInfo.AuthorEmail,
+		},
+		"authoredAt":  commitInfo.AuthoredAt,
+		"committedAt": commitInfo.CommittedAt,
+		"parents":     commitInfo.ParentSHAs,
+		"refs":        commitInfo.Refs,
+		"stats":       commitInfo.Stats,
+		"body":        commitInfo.Message,
+		"committer": map[string]any{
+			"name":  commitInfo.Commiter.Name,
+			"email": commitInfo.Commiter.Email,
+		},
+	}
+	c.JSON(http.StatusOK, common.NewSuccessResponse(data, requestID))
+}
+
+func (h *RepositoriesHandler) GetFiles(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	sha := strings.TrimSpace(c.Param("sha"))
+	if sha == "" {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Commit SHA is required.", false, requestID))
+		return
+	}
+
+	query := entity.CommitFileQuery{}
+	if err := c.ShouldBindQuery(&query); err != nil {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Query parameters must be valid.", false, requestID))
+		return
+	}
+
+	data, cursor, err := h.repoSvr.GetFiles(sha, query)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidCommitSHA), errors.Is(err, service.ErrInvalidCommitCursor), errors.Is(err, service.ErrInvalidCommitQuery):
+			c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "The commit file query is invalid.", false, requestID))
+		case errors.Is(err, service.ErrNoRepositoryOpen):
+			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.NoRepositoryOpen, "No repository opened.", false, requestID))
+		case errors.Is(err, service.ErrRepositoryNotScanned):
+			c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryNotScanned, "Scan the repository before requesting commit files.", false, requestID))
+		case errors.Is(err, service.ErrCommitNotFound):
+			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.CommitNotFound, "The commit was not found in the current repository.", false, requestID))
+		default:
+			c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.InternalError, "The commit files could not be loaded.", false, requestID))
+		}
+		return
+	}
+	c.JSON(http.StatusOK, common.NewSuccessResponseWithCursor(data, requestID, cursor, cursor != ""))
 }

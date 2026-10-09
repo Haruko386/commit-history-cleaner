@@ -4,9 +4,20 @@ type ResponseMeta struct {
 	RequestID string `json:"requestId"`
 }
 
+type ListResponseMeta struct {
+	RequestID  string  `json:"requestId"`
+	NextCursor *string `json:"nextCursor"`
+	HasMore    bool    `json:"hasMore"`
+}
+
 type SuccessResponse[T any] struct {
 	Data T            `json:"data"`
 	Meta ResponseMeta `json:"meta"`
+}
+
+type ListSuccessResponse[T any] struct {
+	Data T                `json:"data"`
+	Meta ListResponseMeta `json:"meta"`
 }
 
 type Details struct {
@@ -29,6 +40,17 @@ func NewSuccessResponse[T any](data T, requestID string) SuccessResponse[T] {
 	return SuccessResponse[T]{
 		Data: data,
 		Meta: ResponseMeta{RequestID: requestID},
+	}
+}
+
+func NewSuccessResponseWithCursor[T any](data T, requestID, cursor string, hasMore bool) ListSuccessResponse[T] {
+	var nextCursor *string
+	if cursor != "" {
+		nextCursor = &cursor
+	}
+	return ListSuccessResponse[T]{
+		Data: data,
+		Meta: ListResponseMeta{RequestID: requestID, NextCursor: nextCursor, HasMore: hasMore},
 	}
 }
 

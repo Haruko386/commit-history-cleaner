@@ -435,25 +435,106 @@ GET /api/v1/repositories/current/commits/{sha}
 
 ### 5.5 提交文件变化
 
+返回某一个提交相对其第一个父提交修改的文件列表。根提交没有父提交，按“空文件树 → 根提交文件树”比较，因此其中的文件均为 `added`。merge commit 暂不返回 combined diff，只与第一个父提交比较。
+
+请求：
+
 ```http
-GET /api/v1/repositories/current/commits/{sha}/files?cursor=&limit=100&sort=introducedBytes&order=desc
+GET /api/v1/repositories/current/commits/8b1a9953c4611296a827abf8c47804d7f8e4f2d1/files?limit=100&sort=introducedBytes&order=desc HTTP/1.1
+Accept: application/json
+```
+
+此接口没有请求体。`sha` 必须使用提交列表返回的完整 40 位 commit SHA。
+
+Query：
+
+| 参数 | 类型 | 默认值 | 约束与说明 |
+|---|---|---:|---|
+| `cursor` | string | — | 不透明分页 cursor；第一页省略，下一页原样传回 `meta.nextCursor` |
+| `limit` | number | `100` | `1..100` |
+| `sort` | string | `introducedBytes` | `introducedBytes \| path \| newBytes \| additions \| deletions` |
+| `order` | string | `desc` | `asc \| desc` |
+
+服务端先按 `sort` 和 `order` 排序，再进行 cursor 分页。排序值相同时按 `path` 升序保证结果稳定；可空的数值字段为 `null` 时始终排在非空值之后。cursor 与 `sha`、`sort`、`order` 绑定，更换任一参数后必须从第一页重新请求。
+
+成功响应：
+
+```json
+{
+  "data": [
+    {
+      "path": "internal/handler/health.go",
+      "previousPath": null,
+      "status": "modified",
+      "oldBlob": "a36d52c10c7d9f3c1a0b7cddbf4355f96c601219",
+      "newBlob": "8f91d72475003e34139d0c4f2a8357f176665a19",
+      "oldBytes": 1250,
+      "newBytes": 1380,
+      "introducedBytes": 1380,
+      "additions": 3,
+      "deletions": 3,
+      "binary": false
+    },
+    {
+      "path": "assets/archive.zip",
+      "previousPath": null,
+      "status": "added",
+      "oldBlob": null,
+      "newBlob": "32c9e5d8bc45c1f1576c2d34feaa263405cf31af",
+      "oldBytes": null,
+      "newBytes": 1048576,
+      "introducedBytes": 1048576,
+      "additions": null,
+      "deletions": null,
+      "binary": true
+    }
+  ],
+  "meta": {
+    "requestId": "req_01J...",
+    "nextCursor": "opaque-cursor-or-null",
+    "hasMore": true
+  }
+}
 ```
 
 响应项 `ChangedFile`：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `path` | `string` | 当前路径 |
-| `previousPath` | `string \| null` | rename/copy 前的路径 |
+| `path` | `string` | 当前路径；删除文件使用删除前的路径 |
+| `previousPath` | `string \| null` | rename/copy 前的路径，其他状态为 null |
 | `status` | `added \| modified \| deleted \| renamed \| copied \| type_changed` | 文件状态 |
 | `oldBlob` | `string \| null` | 旧 blob OID |
 | `newBlob` | `string \| null` | 新 blob OID |
 | `oldBytes` | `number \| null` | 旧文件大小 |
 | `newBytes` | `number \| null` | 新文件大小 |
-| `introducedBytes` | `number` | 此提交新引入的 blob 数据量 |
+| `introducedBytes` | `number` | 此文件变化产生的新 blob 的逻辑大小；删除或仅改名且 blob 未变化时为 0 |
 | `additions` | `number \| null` | 文本新增行数，二进制为 null |
 | `deletions` | `number \| null` | 文本删除行数，二进制为 null |
 | `binary` | `boolean` | 是否为二进制文件 |
+
+`introducedBytes` 不是 `.git` 目录在磁盘上的实际增长量。Git pack 压缩、delta 压缩以及相同 blob 复用都会使实际占用不同；该字段只表示新 blob 的未压缩逻辑大小。
+
+各状态的可空字段：
+
+| status | `oldBlob/oldBytes` | `newBlob/newBytes` | `previousPath` |
+|---|---|---|---|
+| `added` | null | 必需 | null |
+| `modified` | 必需 | 必需 | null |
+| `deleted` | 必需 | null | null |
+| `renamed` | 必需 | 必需 | 必需 |
+| `copied` | 必需 | 必需 | 必需 |
+| `type_changed` | 视旧对象类型而定 | 视新对象类型而定 | null |
+
+可能错误：
+
+| HTTP | code | 说明 |
+|---:|---|---|
+| `400` | `INVALID_REQUEST` | SHA 格式、cursor、limit、sort 或 order 无效 |
+| `404` | `NO_REPOSITORY_OPEN` | 当前没有打开仓库 |
+| `404` | `COMMIT_NOT_FOUND` | SHA 对应的提交不存在于本次扫描结果中 |
+| `409` | `REPOSITORY_NOT_SCANNED` | 仓库尚未完成扫描 |
+| `500` | `INTERNAL_ERROR` | 无法读取提交 tree、父提交或 blob |
 
 ### 5.6 存储概览
 
@@ -807,9 +888,9 @@ CleanupService
 - [x] `POST /api/v1/repositories/current/scans`
 - [x] `GET /api/v1/tasks/{taskId}`
 - [x] `DELETE /api/v1/tasks/{taskId}`
-- [ ] `GET /api/v1/repositories/current/commits`
-- [ ] `GET /api/v1/repositories/current/commits/{sha}`
-- [ ] `GET /api/v1/repositories/current/commits/{sha}/files`
+- [x] `GET /api/v1/repositories/current/commits`
+- [x] `GET /api/v1/repositories/current/commits/{sha}`
+- [x] `GET /api/v1/repositories/current/commits/{sha}/files`
 - [ ] `GET /api/v1/repositories/current/storage`
 - [ ] `GET /api/v1/repositories/current/objects`
 - [ ] `GET /api/v1/repositories/current/objects/{oid}`

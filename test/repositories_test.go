@@ -322,6 +322,111 @@ func TestScanRepositoryResponses(t *testing.T) {
 	}
 }
 
+func TestCommitHistoryRefAndFilteredPagination(t *testing.T) {
+	repositoryPath := t.TempDir()
+	repository, err := git.PlainInit(repositoryPath, false)
+	if err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+	worktree, err := repository.Worktree()
+	if err != nil {
+		t.Fatalf("open worktree: %v", err)
+	}
+
+	commit := func(message, content string, when time.Time) plumbing.Hash {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repositoryPath, "history.txt"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		if _, err := worktree.Add("history.txt"); err != nil {
+			t.Fatalf("stage fixture: %v", err)
+		}
+		hash, err := worktree.Commit(message, &git.CommitOptions{Author: &object.Signature{
+			Name: "Alice Example", Email: "alice@example.com", When: when,
+		}})
+		if err != nil {
+			t.Fatalf("commit fixture: %v", err)
+		}
+		return hash
+	}
+
+	now := time.Now().Add(-time.Hour)
+	rootHash := commit("root", "root\n", now)
+	head, err := repository.Head()
+	if err != nil {
+		t.Fatalf("read initial branch: %v", err)
+	}
+	mainBranch := head.Name()
+	featureBranch := plumbing.NewBranchReferenceName("feature")
+	if err := worktree.Checkout(&git.CheckoutOptions{Branch: featureBranch, Create: true}); err != nil {
+		t.Fatalf("create feature branch: %v", err)
+	}
+	commit("feature one", "feature one\n", now.Add(time.Minute))
+	commit("feature two", "feature two\n", now.Add(2*time.Minute))
+	if err := worktree.Checkout(&git.CheckoutOptions{Branch: mainBranch}); err != nil {
+		t.Fatalf("checkout main branch: %v", err)
+	}
+	commit("main one", "main one\n", now.Add(3*time.Minute))
+
+	taskService := service.NewTaskSvr()
+	taskService.Start()
+	repositoryService := service.NewRepositoriesSvr(taskService)
+	if _, data, err := repositoryService.OpenRepository(repositoryPath); err != nil {
+		t.Fatalf("open repository: %v", err)
+	} else if data.CommitCount != 4 {
+		t.Fatalf("commit count = %d, want 4", data.CommitCount)
+	}
+	task, err := repositoryService.ScanRepository(false)
+	if err != nil {
+		t.Fatalf("start scan: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		current, err := taskService.GetTask(task.TaskID)
+		if err != nil {
+			t.Fatalf("get scan task: %v", err)
+		}
+		if current.Status == entity.Completed {
+			break
+		}
+		if current.Status == entity.Failed {
+			t.Fatalf("scan failed: %v", current.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scan did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	keyword := "FEATURE"
+	first, cursor, err := repositoryService.GetCurrentCommits(&entity.CommitsQuery{Ref: "feature", Query: &keyword, Limit: 1})
+	if err != nil {
+		t.Fatalf("get first feature page: %v", err)
+	}
+	if len(first) != 1 || first[0].Subject != "feature two" || cursor == "" {
+		t.Fatalf("unexpected first page: commits=%+v cursor=%q", first, cursor)
+	}
+	second, nextCursor, err := repositoryService.GetCurrentCommits(&entity.CommitsQuery{Ref: "feature", Query: &keyword, Limit: 1, Cursor: &cursor})
+	if err != nil {
+		t.Fatalf("get second feature page: %v", err)
+	}
+	if len(second) != 1 || second[0].Subject != "feature one" || nextCursor != "" {
+		t.Fatalf("unexpected second page: commits=%+v cursor=%q", second, nextCursor)
+	}
+
+	rootRef := rootHash.String()[:8]
+	rootCommits, _, err := repositoryService.GetCurrentCommits(&entity.CommitsQuery{Ref: rootRef})
+	if err != nil {
+		t.Fatalf("get commits by SHA: %v", err)
+	}
+	if len(rootCommits) != 1 || rootCommits[0].SHA != rootHash.String() {
+		t.Fatalf("unexpected root history: %+v", rootCommits)
+	}
+	if _, _, err := repositoryService.GetCurrentCommits(&entity.CommitsQuery{Ref: "missing"}); !errors.Is(err, service.ErrUnsupportedRef) {
+		t.Fatalf("missing ref error = %v, want %v", err, service.ErrUnsupportedRef)
+	}
+}
+
 func performRepositoryRequest(body string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
