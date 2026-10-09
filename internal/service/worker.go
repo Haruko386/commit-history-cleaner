@@ -237,6 +237,84 @@ func scanRepo(ctx context.Context, path string, onProgress func(current int)) ([
 		return nil, fmt.Errorf("failed to get commits: %w", err)
 	}
 
+	commitIndexes := make(map[string]int, len(commits))
+	for index := range commits {
+		commitIndexes[commits[index].SHA] = index
+	}
+	snapshotByCommit := make(map[string]int64, len(commits))
+	visiting := make(map[string]bool)
+	var calculateSnapshot func(string) (int64, error)
+	calculateSnapshot = func(sha string) (int64, error) {
+		if snapshot, ok := snapshotByCommit[sha]; ok {
+			return snapshot, nil
+		}
+		if visiting[sha] {
+			return 0, fmt.Errorf("commit graph contains a cycle at %s", sha)
+		}
+		index, ok := commitIndexes[sha]
+		if !ok {
+			return 0, fmt.Errorf("commit %s is missing from scan results", sha)
+		}
+		visiting[sha] = true
+		defer delete(visiting, sha)
+
+		commit := &commits[index]
+		snapshot := commit.Stats.SnapshotBytes
+		if len(commit.ParentSHAs) > 0 {
+			if _, ok := commitIndexes[commit.ParentSHAs[0]]; ok {
+				parentSnapshot, err := calculateSnapshot(commit.ParentSHAs[0])
+				if err != nil {
+					return 0, err
+				}
+				snapshot = parentSnapshot
+				for _, file := range commit.Files {
+					switch file.Status {
+					case entity.FileStatusAdded, entity.FileStatusCopied:
+						if file.NewBytes != nil {
+							snapshot += *file.NewBytes
+						}
+					case entity.FileStatusDeleted:
+						if file.OldBytes != nil {
+							snapshot -= *file.OldBytes
+						}
+					default:
+						if file.OldBytes != nil {
+							snapshot -= *file.OldBytes
+						}
+						if file.NewBytes != nil {
+							snapshot += *file.NewBytes
+						}
+					}
+				}
+			} else {
+				commitObject, err := repo.CommitObject(plumbing.NewHash(sha))
+				if err != nil {
+					return 0, err
+				}
+				tree, err := commitObject.Tree()
+				if err != nil {
+					return 0, err
+				}
+				fileIter := tree.Files()
+				err = fileIter.ForEach(func(file *object.File) error {
+					snapshot += file.Size
+					return nil
+				})
+				if err != nil {
+					return 0, err
+				}
+			}
+		}
+		commit.Stats.SnapshotBytes = snapshot
+		snapshotByCommit[sha] = snapshot
+		return snapshot, nil
+	}
+	for index := range commits {
+		if _, err := calculateSnapshot(commits[index].SHA); err != nil {
+			return nil, fmt.Errorf("failed to calculate snapshot for %s: %w", commits[index].SHA, err)
+		}
+	}
+
 	return commits, nil
 }
 
@@ -303,17 +381,6 @@ func calcStatsAndFiles(c *object.Commit) (entity.Stats, []entity.CommitFile, err
 	}
 
 	changes, err := parentTree.Diff(currentTree)
-	if err != nil {
-		return stats, files, err
-	}
-
-	parentPathsByBlob := make(map[string][]string)
-	parentFiles := parentTree.Files()
-	err = parentFiles.ForEach(func(file *object.File) error {
-		parentPathsByBlob[file.Hash.String()] = append(parentPathsByBlob[file.Hash.String()], file.Name)
-		return nil
-	})
-	parentFiles.Close()
 	if err != nil {
 		return stats, files, err
 	}
@@ -443,6 +510,41 @@ func calcStatsAndFiles(c *object.Commit) (entity.Stats, []entity.CommitFile, err
 			removed[deletedIndex] = struct{}{}
 			continue
 		}
+	}
+
+	addedBlobs := make(map[string]struct{})
+	for index := range files {
+		if files[index].Status == entity.FileStatusAdded && files[index].NewBlob != nil {
+			addedBlobs[*files[index].NewBlob] = struct{}{}
+		}
+	}
+	parentPathsByBlob := make(map[string][]string)
+	if len(addedBlobs) > 0 {
+		walker := object.NewTreeWalker(parentTree, true, nil)
+		defer walker.Close()
+		for {
+			path, entry, err := walker.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return stats, files, err
+			}
+			if entry.Mode == filemode.Dir || entry.Mode == filemode.Submodule {
+				continue
+			}
+			blob := entry.Hash.String()
+			if _, ok := addedBlobs[blob]; ok {
+				parentPathsByBlob[blob] = append(parentPathsByBlob[blob], path)
+			}
+		}
+	}
+
+	for index := range files {
+		file := &files[index]
+		if file.Status != entity.FileStatusAdded || file.NewBlob == nil {
+			continue
+		}
 		for _, previousPath := range parentPathsByBlob[*file.NewBlob] {
 			if previousPath == file.Path {
 				continue
@@ -471,15 +573,6 @@ func calcStatsAndFiles(c *object.Commit) (entity.Stats, []entity.CommitFile, err
 		files = filtered
 	}
 
-	fileIter := currentTree.Files()
-	defer fileIter.Close()
-	err = fileIter.ForEach(func(file *object.File) error {
-		stats.SnapshotBytes += file.Size
-		return nil
-	})
-	if err != nil {
-		return entity.Stats{}, make([]entity.CommitFile, 0), err
-	}
 	return stats, files, nil
 }
 

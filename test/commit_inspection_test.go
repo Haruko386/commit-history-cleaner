@@ -150,6 +150,20 @@ func TestGetFilesServiceContract(t *testing.T) {
 	if copied.Status != entity.FileStatusCopied || copied.PreviousPath == nil || *copied.PreviousPath != "new.txt" || copied.IntroducedBytes != 0 {
 		t.Errorf("unexpected copied file: %+v", copied)
 	}
+
+	for sha, expected := range map[string]int64{
+		rootHash.String():   15,
+		updateHash.String(): 32,
+		renameHash.String(): 41,
+	} {
+		commit, err := repositoryService.GetCommit(sha)
+		if err != nil {
+			t.Fatalf("get commit %s: %v", sha, err)
+		}
+		if commit.Stats.SnapshotBytes != expected {
+			t.Errorf("snapshot bytes for %s = %d, want %d", sha, commit.Stats.SnapshotBytes, expected)
+		}
+	}
 }
 
 func TestGetFilesEndpointAndValidation(t *testing.T) {
