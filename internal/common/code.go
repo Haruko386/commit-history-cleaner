@@ -4,6 +4,7 @@ const (
 	InvalidRequest         = "INVALID_REQUEST"
 	PathRequired           = "PATH_REQUIRED"
 	RepositoryNotFound     = "REPOSITORY_NOT_FOUND"
+	RepositoryNotScanned   = "REPOSITORY_NOT_SCANNED"
 	NoRepositoryOpen       = "NO_REPOSITORY_OPEN"
 	CommitNotFound         = "COMMIT_NOT_FOUND"
 	ObjectNotFound         = "OBJECT_NOT_FOUND"

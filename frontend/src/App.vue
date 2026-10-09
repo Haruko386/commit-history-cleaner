@@ -47,9 +47,74 @@ type ScanTask = {
   error?: string | null
 }
 
+type CommitSummary = {
+  sha: string
+  shortSha: string
+  subject: string
+  author: {
+    name: string
+    email: string
+  }
+  authoredAt: string
+  committedAt: string
+  parents: string[]
+  refs: {
+    branches: string[] | null
+    tags: string[] | null
+  }
+  stats: {
+    introducedBytes: number
+    snapshotBytes: number
+    addedFiles: number
+    modifiedFiles: number
+    deletedFiles: number
+  }
+  analysisStatus: string
+}
+
+type CommitListResponse = {
+  data?: CommitSummary[]
+  meta?: {
+    requestId: string
+    nextCursor: string | null
+    hasMore: boolean
+  }
+} & ErrorResponse
+
+type CommitDetail = CommitSummary & {
+  body: string
+  committer: {
+    name: string
+    email: string
+  }
+}
+
+type CommitFile = {
+  path: string
+  previousPath: string | null
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'type_changed'
+  oldBlob: string | null
+  newBlob: string | null
+  oldBytes: number | null
+  newBytes: number | null
+  introducedBytes: number
+  additions: number | null
+  deletions: number | null
+  binary: boolean
+}
+
+type CommitFilesResponse = {
+  data?: CommitFile[]
+  meta?: {
+    requestId: string
+    nextCursor: string | null
+    hasMore: boolean
+  }
+} & ErrorResponse
+
 const navigation: NavigationItem[] = [
   { label: 'Overview', icon: 'overview', available: true },
-  { label: 'Commit history', icon: 'history', available: false },
+  { label: 'Commit history', icon: 'history', available: true },
   { label: 'Large objects', icon: 'objects', available: false },
   { label: 'Cleanup plan', icon: 'cleanup', available: false },
 ]
@@ -68,6 +133,26 @@ const scanRequiresForce = ref(false)
 const githubToken = ref('')
 const githubStatus = ref<'idle' | 'checking' | 'connected' | 'error'>('idle')
 const githubMessage = ref('Not connected')
+const commits = ref<CommitSummary[]>([])
+const commitsLoading = ref(false)
+const commitsLoaded = ref(false)
+const commitsError = ref('')
+const nextCommitCursor = ref<string | null>(null)
+const commitQuery = ref('')
+const commitAuthor = ref('')
+const commitRef = ref('HEAD')
+const commitSince = ref('')
+const commitUntil = ref('')
+const selectedCommit = ref<CommitDetail | null>(null)
+const selectedCommitSha = ref('')
+const commitDetailLoading = ref(false)
+const commitDetailError = ref('')
+const commitFiles = ref<CommitFile[]>([])
+const commitFilesLoading = ref(false)
+const commitFilesError = ref('')
+const nextFileCursor = ref<string | null>(null)
+const fileSort = ref('introducedBytes')
+const fileOrder = ref('desc')
 let scanPollTimer: ReturnType<typeof setTimeout> | undefined
 
 const scanIsActive = computed(() => scanTask.value?.status === 'queued' || scanTask.value?.status === 'running')
@@ -105,6 +190,9 @@ function selectNavigation(item: NavigationItem) {
 
   activeNavigation.value = item.label
   notice.value = ''
+  if (item.label === 'Commit history' && repository.value?.analysisStatus === 'ready' && !commitsLoaded.value) {
+    void loadCommits(true)
+  }
 }
 
 function requestRepository() {
@@ -121,6 +209,137 @@ function formatBytes(value: number) {
     unit = units[index]
   }
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${unit}`
+}
+
+function formatCommitDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+function resetCommitState() {
+  commits.value = []
+  commitsLoaded.value = false
+  commitsError.value = ''
+  nextCommitCursor.value = null
+  closeCommitDetail()
+}
+
+function closeCommitDetail() {
+  selectedCommit.value = null
+  selectedCommitSha.value = ''
+  commitDetailError.value = ''
+  commitFiles.value = []
+  commitFilesError.value = ''
+  nextFileCursor.value = null
+}
+
+function toDateBoundary(value: string, endOfDay: boolean) {
+  if (!value) return ''
+  return new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00'}`).toISOString()
+}
+
+async function loadCommits(reset: boolean) {
+  if (!repository.value || repository.value.analysisStatus !== 'ready' || commitsLoading.value) return
+
+  commitsLoading.value = true
+  commitsError.value = ''
+  if (reset) {
+    commits.value = []
+    nextCommitCursor.value = null
+  }
+
+  const parameters = new URLSearchParams({
+    limit: '50',
+    ref: commitRef.value.trim() || 'HEAD',
+  })
+  if (commitQuery.value.trim()) parameters.set('query', commitQuery.value.trim())
+  if (commitAuthor.value.trim()) parameters.set('author', commitAuthor.value.trim())
+  if (commitSince.value) parameters.set('since', toDateBoundary(commitSince.value, false))
+  if (commitUntil.value) parameters.set('until', toDateBoundary(commitUntil.value, true))
+  if (!reset && nextCommitCursor.value) parameters.set('cursor', nextCommitCursor.value)
+
+  try {
+    const response = await fetch(`/api/v1/repositories/current/commits?${parameters.toString()}`)
+    const body = (await response.json()) as CommitListResponse
+    if (!response.ok || !body.data) {
+      commitsError.value = body.error?.message ?? 'The commit history could not be loaded.'
+      return
+    }
+
+    commits.value = reset ? body.data : [...commits.value, ...body.data]
+    nextCommitCursor.value = body.meta?.nextCursor ?? null
+    commitsLoaded.value = true
+  } catch {
+    commitsError.value = 'The local backend is unavailable.'
+  } finally {
+    commitsLoading.value = false
+  }
+}
+
+async function openCommit(sha: string) {
+  selectedCommitSha.value = sha
+  selectedCommit.value = null
+  commitDetailError.value = ''
+  commitFiles.value = []
+  commitFilesError.value = ''
+  nextFileCursor.value = null
+  commitDetailLoading.value = true
+
+  try {
+    const response = await fetch(`/api/v1/repositories/current/commits/${encodeURIComponent(sha)}`)
+    const body = (await response.json()) as { data?: CommitDetail } & ErrorResponse
+    if (selectedCommitSha.value !== sha) return
+    if (!response.ok || !body.data) {
+      commitDetailError.value = body.error?.message ?? 'The commit could not be loaded.'
+      return
+    }
+    selectedCommit.value = body.data
+    await loadCommitFiles(true)
+  } catch {
+    if (selectedCommitSha.value === sha) commitDetailError.value = 'The local backend is unavailable.'
+  } finally {
+    if (selectedCommitSha.value === sha) commitDetailLoading.value = false
+  }
+}
+
+async function loadCommitFiles(reset: boolean) {
+  const sha = selectedCommitSha.value
+  if (!sha || commitFilesLoading.value) return
+
+  commitFilesLoading.value = true
+  commitFilesError.value = ''
+  if (reset) {
+    commitFiles.value = []
+    nextFileCursor.value = null
+  }
+
+  const parameters = new URLSearchParams({
+    limit: '100',
+    sort: fileSort.value,
+    order: fileOrder.value,
+  })
+  if (!reset && nextFileCursor.value) parameters.set('cursor', nextFileCursor.value)
+
+  try {
+    const response = await fetch(`/api/v1/repositories/current/commits/${encodeURIComponent(sha)}/files?${parameters.toString()}`)
+    const body = (await response.json()) as CommitFilesResponse
+    if (selectedCommitSha.value !== sha) return
+    if (!response.ok || !body.data) {
+      commitFilesError.value = body.error?.message ?? 'The changed files could not be loaded.'
+      return
+    }
+    commitFiles.value = reset ? body.data : [...commitFiles.value, ...body.data]
+    nextFileCursor.value = body.meta?.nextCursor ?? null
+  } catch {
+    if (selectedCommitSha.value === sha) commitFilesError.value = 'The local backend is unavailable.'
+  } finally {
+    if (selectedCommitSha.value === sha) commitFilesLoading.value = false
+  }
 }
 
 async function checkHealth() {
@@ -157,6 +376,7 @@ async function openRepository() {
     clearScanPoll()
     scanTask.value = null
     scanRequiresForce.value = false
+    resetCommitState()
     repository.value = body.data
     repositoryPath.value = body.data.path
     showNotice(`Opened ${body.data.name}.`, 'success')
@@ -204,6 +424,7 @@ async function refreshScanTask(taskId: string) {
       updateRepositoryAnalysis('ready')
       scanRequiresForce.value = true
       showNotice('Repository scan completed.', 'success')
+      if (activeNavigation.value === 'Commit history') void loadCommits(true)
     } else if (body.data.status === 'failed') {
       updateRepositoryAnalysis('failed')
       scanRequiresForce.value = true
@@ -223,6 +444,7 @@ async function startScan() {
 
   startingScan.value = true
   notice.value = ''
+  resetCommitState()
   const force = scanRequiresForce.value || scanTask.value !== null || repository.value.analysisStatus === 'ready' || repository.value.analysisStatus === 'failed'
 
   try {
@@ -367,7 +589,7 @@ onBeforeUnmount(clearScanPoll)
         <button type="button" aria-label="Dismiss message" @click="notice = ''"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 3.5 9 9m0-9-9 9" /></svg></button>
       </div>
 
-      <div class="layout">
+      <div v-if="activeNavigation === 'Overview'" class="layout">
         <div class="main-column">
           <section class="box" aria-labelledby="repository-title">
             <header class="box-header"><strong id="repository-title">Repository</strong></header>
@@ -454,6 +676,194 @@ onBeforeUnmount(clearScanPoll)
           </section>
         </aside>
       </div>
+
+      <section v-else-if="activeNavigation === 'Commit history'" class="commit-page" aria-labelledby="commit-history-title">
+        <div v-if="!repository" class="box blank-state">
+          <svg class="blank-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.75 5.75h7l2 2h9.5v11.5H2.75V5.75Z" /><path d="M2.75 9.25h18.5" /></svg>
+          <h1>Open a repository first</h1>
+          <p>Select a local Git repository from the Overview page.</p>
+          <button class="button button-primary" type="button" @click="activeNavigation = 'Overview'">Go to Overview</button>
+        </div>
+
+        <div v-else-if="repository.analysisStatus !== 'ready'" class="box blank-state">
+          <svg class="blank-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.75-6.48L3 8" /><path d="M3 3.5V8h4.5M12 7v5l3 2" /></svg>
+          <h1>Scan the repository</h1>
+          <p>Commit history becomes available after the repository scan completes.</p>
+          <button class="button button-primary" type="button" @click="activeNavigation = 'Overview'">Go to scan</button>
+        </div>
+
+        <template v-else-if="!selectedCommitSha">
+          <section class="box commit-filters" aria-labelledby="commit-filter-title">
+            <header class="box-header"><strong id="commit-filter-title">Filter commits</strong></header>
+            <form class="commit-filter-form" @submit.prevent="loadCommits(true)">
+              <label class="filter-query">
+                <span>Message or SHA</span>
+                <input v-model="commitQuery" type="search" placeholder="Search commits" spellcheck="false" />
+              </label>
+              <label>
+                <span>Author</span>
+                <input v-model="commitAuthor" type="search" placeholder="Name or email" spellcheck="false" />
+              </label>
+              <label>
+                <span>Ref</span>
+                <input v-model="commitRef" type="text" placeholder="HEAD, branch, tag, or SHA" spellcheck="false" />
+              </label>
+              <label>
+                <span>Since</span>
+                <input v-model="commitSince" type="date" />
+              </label>
+              <label>
+                <span>Until</span>
+                <input v-model="commitUntil" type="date" />
+              </label>
+              <button class="button button-primary filter-submit" type="submit" :disabled="commitsLoading">
+                {{ commitsLoading ? 'Loading…' : 'Apply filters' }}
+              </button>
+            </form>
+          </section>
+
+          <section class="box commit-list-box" aria-labelledby="commit-history-title">
+            <header class="box-header commit-list-header">
+              <strong id="commit-history-title">Commits</strong>
+              <span>{{ commits.length }} loaded</span>
+            </header>
+
+            <div v-if="commitsError" class="commit-message commit-message-error">
+              <span>{{ commitsError }}</span>
+              <button class="button" type="button" @click="loadCommits(true)">Retry</button>
+            </div>
+            <div v-else-if="commitsLoading && commits.length === 0" class="commit-message">Loading commit history…</div>
+            <div v-else-if="commitsLoaded && commits.length === 0" class="commit-message">No commits match these filters.</div>
+
+            <ol v-else class="commit-list">
+              <li v-for="commit in commits" :key="commit.sha">
+                <button class="commit-row" type="button" @click="openCommit(commit.sha)">
+                  <div class="commit-main">
+                    <div class="commit-subject-line">
+                      <strong>{{ commit.subject }}</strong>
+                      <span v-for="branch in commit.refs.branches ?? []" :key="`branch-${branch}`" class="ref-label ref-branch">{{ branch }}</span>
+                      <span v-for="tag in commit.refs.tags ?? []" :key="`tag-${tag}`" class="ref-label ref-tag">{{ tag }}</span>
+                    </div>
+                    <p><strong>{{ commit.author.name }}</strong> committed {{ formatCommitDate(commit.committedAt) }}</p>
+                  </div>
+                  <div class="commit-stats" aria-label="Commit statistics">
+                    <span title="Introduced bytes">+{{ formatBytes(commit.stats.introducedBytes) }}</span>
+                    <span title="Changed files">{{ commit.stats.addedFiles + commit.stats.modifiedFiles + commit.stats.deletedFiles }} files</span>
+                  </div>
+                  <code>{{ commit.shortSha }}</code>
+                </button>
+              </li>
+            </ol>
+
+            <div v-if="nextCommitCursor || (commitsLoading && commits.length > 0)" class="commit-pagination">
+              <button class="button" type="button" :disabled="commitsLoading || !nextCommitCursor" @click="loadCommits(false)">
+                {{ commitsLoading ? 'Loading…' : 'Load more' }}
+              </button>
+            </div>
+          </section>
+        </template>
+
+        <template v-else>
+          <button class="commit-back" type="button" @click="closeCommitDetail">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.5 3-5 5 5 5" /></svg>
+            Back to commits
+          </button>
+
+          <div v-if="commitDetailLoading" class="box commit-message">Loading commit details…</div>
+          <div v-else-if="commitDetailError" class="box commit-message commit-message-error">
+            <span>{{ commitDetailError }}</span>
+            <button class="button" type="button" @click="openCommit(selectedCommitSha)">Retry</button>
+          </div>
+
+          <template v-else-if="selectedCommit">
+            <section class="box commit-detail" aria-labelledby="commit-detail-title">
+              <header class="commit-detail-header">
+                <div>
+                  <h1 id="commit-detail-title">{{ selectedCommit.subject }}</h1>
+                  <div class="commit-detail-refs">
+                    <span v-for="branch in selectedCommit.refs.branches ?? []" :key="`detail-branch-${branch}`" class="ref-label ref-branch">{{ branch }}</span>
+                    <span v-for="tag in selectedCommit.refs.tags ?? []" :key="`detail-tag-${tag}`" class="ref-label ref-tag">{{ tag }}</span>
+                  </div>
+                </div>
+                <code>{{ selectedCommit.shortSha }}</code>
+              </header>
+
+              <div class="commit-detail-meta">
+                <p><strong>{{ selectedCommit.author.name }}</strong> authored and {{ selectedCommit.committer.name }} committed on {{ formatCommitDate(selectedCommit.committedAt) }}</p>
+                <p class="monospace">{{ selectedCommit.sha }}</p>
+              </div>
+
+              <pre v-if="selectedCommit.body" class="commit-body">{{ selectedCommit.body }}</pre>
+
+              <dl class="commit-detail-stats">
+                <div><dt>Introduced</dt><dd>{{ formatBytes(selectedCommit.stats.introducedBytes) }}</dd></div>
+                <div><dt>Snapshot</dt><dd>{{ formatBytes(selectedCommit.stats.snapshotBytes) }}</dd></div>
+                <div><dt>Added</dt><dd>{{ selectedCommit.stats.addedFiles }}</dd></div>
+                <div><dt>Modified</dt><dd>{{ selectedCommit.stats.modifiedFiles }}</dd></div>
+                <div><dt>Deleted</dt><dd>{{ selectedCommit.stats.deletedFiles }}</dd></div>
+              </dl>
+            </section>
+
+            <section class="box commit-files" aria-labelledby="commit-files-title">
+              <header class="box-header commit-files-header">
+                <div>
+                  <strong id="commit-files-title">Files changed</strong>
+                  <span>{{ commitFiles.length }} loaded</span>
+                </div>
+                <form class="file-sort" @submit.prevent="loadCommitFiles(true)">
+                  <label>
+                    <span>Sort</span>
+                    <select v-model="fileSort">
+                      <option value="introducedBytes">Introduced bytes</option>
+                      <option value="path">Path</option>
+                      <option value="newBytes">New size</option>
+                      <option value="additions">Additions</option>
+                      <option value="deletions">Deletions</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Order</span>
+                    <select v-model="fileOrder">
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </label>
+                  <button class="button" type="submit" :disabled="commitFilesLoading">Apply</button>
+                </form>
+              </header>
+
+              <div v-if="commitFilesError" class="commit-message commit-message-error">
+                <span>{{ commitFilesError }}</span>
+                <button class="button" type="button" @click="loadCommitFiles(true)">Retry</button>
+              </div>
+              <div v-else-if="commitFilesLoading && commitFiles.length === 0" class="commit-message">Loading changed files…</div>
+              <div v-else-if="commitFiles.length === 0" class="commit-message">No changed files.</div>
+
+              <ol v-else class="file-list">
+                <li v-for="file in commitFiles" :key="`${file.path}-${file.previousPath ?? ''}`" class="file-row">
+                  <span class="file-status" :class="`file-status-${file.status}`">{{ file.status.replace('_', ' ') }}</span>
+                  <div class="file-path">
+                    <strong>{{ file.path }}</strong>
+                    <span v-if="file.previousPath">from {{ file.previousPath }}</span>
+                    <span v-if="file.binary">Binary file</span>
+                  </div>
+                  <span class="file-size">{{ formatBytes(file.introducedBytes) }}</span>
+                  <span class="file-lines">
+                    <span class="line-additions">+{{ file.additions ?? '—' }}</span>
+                    <span class="line-deletions">−{{ file.deletions ?? '—' }}</span>
+                  </span>
+                </li>
+              </ol>
+
+              <div v-if="nextFileCursor || (commitFilesLoading && commitFiles.length > 0)" class="commit-pagination">
+                <button class="button" type="button" :disabled="commitFilesLoading || !nextFileCursor" @click="loadCommitFiles(false)">
+                  {{ commitFilesLoading ? 'Loading…' : 'Load more' }}
+                </button>
+              </div>
+            </section>
+          </template>
+        </template>
+      </section>
     </main>
   </div>
 </template>
