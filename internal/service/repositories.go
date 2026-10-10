@@ -906,7 +906,8 @@ func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expe
 			popCmd := exec.CommandContext(context.Background(), "git", "stash", "pop")
 			popCmd.Dir = s.current.Path
 			if output, popErr := popCmd.CombinedOutput(); popErr != nil && err == nil {
-				err = fmt.Errorf("%w: history was rewritten but git stash pop failed: %v: %s", ErrGitCommandFailed, popErr, strings.TrimSpace(string(output)))
+				popFailure := fmt.Errorf("%w: git stash pop failed; changes remain in stash: %v: %s", ErrGitCommandFailed, popErr, strings.TrimSpace(string(output)))
+				err = errors.Join(err, popFailure)
 			}
 		}()
 	}
@@ -942,7 +943,7 @@ func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expe
 		return "", fmt.Errorf("%w: git rebase failed: %v: %s", ErrGitCommandFailed, rebaseErr, strings.TrimSpace(string(output)))
 	}
 
-	headCmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd = exec.CommandContext(context.Background(), "git", "rev-parse", "HEAD")
 	headCmd.Dir = s.current.Path
 	headOutput, err = headCmd.Output()
 	if err != nil {
