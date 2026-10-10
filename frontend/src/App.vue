@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 type NavigationItem = {
   label: string
-  icon: 'overview' | 'history' | 'objects' | 'cleanup'
+  icon: 'overview' | 'history' | 'cleanup'
   available: boolean
 }
 
@@ -115,7 +115,6 @@ type CommitFilesResponse = {
 const navigation: NavigationItem[] = [
   { label: 'Overview', icon: 'overview', available: true },
   { label: 'Commit history', icon: 'history', available: true },
-  { label: 'Large objects', icon: 'objects', available: false },
   { label: 'Cleanup plan', icon: 'cleanup', available: false },
 ]
 
@@ -143,6 +142,8 @@ const commitAuthor = ref('')
 const commitRef = ref('HEAD')
 const commitSince = ref('')
 const commitUntil = ref('')
+const commitMinSize = ref<number | ''>('')
+const commitMinSizeUnit = ref(1024 * 1024)
 const selectedCommit = ref<CommitDetail | null>(null)
 const selectedCommitSha = ref('')
 const commitDetailLoading = ref(false)
@@ -261,6 +262,9 @@ async function loadCommits(reset: boolean) {
   if (commitAuthor.value.trim()) parameters.set('author', commitAuthor.value.trim())
   if (commitSince.value) parameters.set('since', toDateBoundary(commitSince.value, false))
   if (commitUntil.value) parameters.set('until', toDateBoundary(commitUntil.value, true))
+  if (commitMinSize.value !== '' && commitMinSize.value > 0) {
+    parameters.set('minIntroducedBytes', String(Math.floor(commitMinSize.value * commitMinSizeUnit.value)))
+  }
   if (!reset && nextCommitCursor.value) parameters.set('cursor', nextCommitCursor.value)
 
   try {
@@ -575,7 +579,6 @@ onBeforeUnmount(clearScanPoll)
         <button v-for="item in navigation" :key="item.label" class="tab-item" :class="{ selected: activeNavigation === item.label }" type="button" @click="selectNavigation(item)">
           <svg v-if="item.icon === 'overview'" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.25 2.25h4.5v4.5h-4.5v-4.5Zm7 0h4.5v4.5h-4.5v-4.5Zm-7 7h4.5v4.5h-4.5v-4.5Zm7 0h4.5v4.5h-4.5v-4.5Z" /></svg>
           <svg v-else-if="item.icon === 'history'" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.25 8A5.75 5.75 0 1 0 4 3.88L2.25 5.5" /><path d="M2.25 2.5v3h3M8 4.5V8l2.5 1.5" /></svg>
-          <svg v-else-if="item.icon === 'objects'" viewBox="0 0 16 16" aria-hidden="true"><path d="m8 1.75 5.75 3.2L8 8.25l-5.75-3.3L8 1.75Z" /><path d="m2.25 8.1 5.75 3.3 5.75-3.3M2.25 11.2 8 14.4l5.75-3.2" /></svg>
           <svg v-else viewBox="0 0 16 16" aria-hidden="true"><path d="M2.25 4h11.5M5 4V2.25h6V4M4 4l.6 9.75h6.8L12 4M6.5 6.5v4.75M9.5 6.5v4.75" /></svg>
           {{ item.label }}
         </button>
@@ -715,6 +718,17 @@ onBeforeUnmount(clearScanPoll)
               <label>
                 <span>Until</span>
                 <input v-model="commitUntil" type="date" />
+              </label>
+              <label class="filter-size">
+                <span>Minimum introduced size</span>
+                <span class="size-filter-control">
+                  <input v-model.number="commitMinSize" type="number" min="0" step="0.1" placeholder="Any size" />
+                  <select v-model="commitMinSizeUnit" aria-label="Size unit">
+                    <option :value="1024">KB</option>
+                    <option :value="1024 * 1024">MB</option>
+                    <option :value="1024 * 1024 * 1024">GB</option>
+                  </select>
+                </span>
               </label>
               <button class="button button-primary filter-submit" type="submit" :disabled="commitsLoading">
                 {{ commitsLoading ? 'Loading…' : 'Apply filters' }}

@@ -18,13 +18,14 @@ type CommitInfo struct {
 }
 
 type CommitsQuery struct {
-	Cursor *string    `form:"cursor"`
-	Limit  int        `form:"limit"`
-	Query  *string    `form:"query"`
-	Author *string    `form:"author"`
-	Since  *time.Time `form:"since"`
-	Until  *time.Time `form:"until"`
-	Ref    string     `form:"ref"`
+	Cursor             *string    `form:"cursor"`
+	Limit              int        `form:"limit"`
+	Query              *string    `form:"query"`
+	Author             *string    `form:"author"`
+	Since              *time.Time `form:"since"`
+	Until              *time.Time `form:"until"`
+	Ref                string     `form:"ref"`
+	MinIntroducedBytes int64      `form:"minIntroducedBytes"`
 }
 
 type CommitFileQuery struct {
