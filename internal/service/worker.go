@@ -179,6 +179,12 @@ func scanRepo(ctx context.Context, path string, onProgress func(current int)) ([
 		return nil, fmt.Errorf("failed to build ref map: %w", err)
 	}
 
+	objectIter, err := repo.Storer.IterEncodedObjects(plumbing.AnyObject)
+	if err != nil {
+		return nil, fmt.Errorf("failed to index git objects: %w", err)
+	}
+	objectIter.Close()
+
 	_, err = repo.Head()
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
