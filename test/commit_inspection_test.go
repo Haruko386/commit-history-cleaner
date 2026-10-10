@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -77,6 +78,27 @@ func TestGetCommitEndpointErrors(t *testing.T) {
 		t.Fatalf("open other repository: %v", err)
 	}
 	assertCommitInspectionError(t, router, "/api/v1/repositories/current/commits/"+updateHash.String(), http.StatusConflict, common.RepositoryNotScanned)
+}
+
+func TestGetCurrentCommitsFiltersMinimumIntroducedBytes(t *testing.T) {
+	repositoryService, _, updateHash, _ := newCommitInspectionFixture(t)
+	router := newCommitInspectionRouter(repositoryService)
+
+	response := performCommitInspectionRequest(router, "/api/v1/repositories/current/commits?minIntroducedBytes=32")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var body struct {
+		Data []entity.CommitSummary `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0].SHA != updateHash.String() {
+		t.Errorf("filtered commits = %+v, want only %s", body.Data, updateHash)
+	}
+
+	assertCommitInspectionError(t, router, "/api/v1/repositories/current/commits?minIntroducedBytes=-1", http.StatusBadRequest, common.InvalidRequest)
 }
 
 func TestGetFilesServiceContract(t *testing.T) {
@@ -243,6 +265,181 @@ func TestCommitFileJSONKeepsNullableFields(t *testing.T) {
 	}
 }
 
+func TestCleanupEndpointErrors(t *testing.T) {
+	validSHA := "0123456789012345678901234567890123456789"
+	withoutRepository := newCommitInspectionRouter(service.NewRepositoriesSvr(service.NewTaskSvr()))
+	assertCleanupError(t, withoutRepository, map[string]any{
+		"commitShas":   []string{validSHA},
+		"expectedHead": validSHA,
+	}, http.StatusNotFound, common.NoRepositoryOpen)
+
+	repositoryService, rootHash, updateHash, headHash := newCommitInspectionFixture(t)
+	router := newCommitInspectionRouter(repositoryService)
+	assertCleanupError(t, router, map[string]any{
+		"commitShas":   []string{"short"},
+		"expectedHead": headHash.String(),
+	}, http.StatusBadRequest, common.InvalidRequest)
+	assertCleanupError(t, router, map[string]any{
+		"commitShas":   []string{validSHA},
+		"expectedHead": headHash.String(),
+	}, http.StatusNotFound, common.CommitNotFound)
+	assertCleanupError(t, router, map[string]any{
+		"commitShas":   []string{rootHash.String()},
+		"expectedHead": headHash.String(),
+	}, http.StatusUnprocessableEntity, common.CleanupUnsupported)
+	assertCleanupError(t, router, map[string]any{
+		"commitShas":   []string{updateHash.String()},
+		"expectedHead": validSHA,
+	}, http.StatusConflict, common.RepositoryChanged)
+
+	_, repositoryData, _ := repositoryService.GetCurrentRepository()
+	if err := os.WriteFile(filepath.Join(repositoryData.Path, "dirty.txt"), []byte("dirty"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	assertCleanupError(t, router, map[string]any{
+		"commitShas":   []string{headHash.String()},
+		"expectedHead": headHash.String(),
+	}, http.StatusConflict, common.WorkingTreeDirty)
+}
+
+func TestCleanupRejectsUnreachableAndMergeCommits(t *testing.T) {
+	repositoryService, rootHash, _, headHash := newCommitInspectionFixture(t)
+	_, repositoryData, _ := repositoryService.GetCurrentRepository()
+	repository, err := git.PlainOpen(repositoryData.Path)
+	if err != nil {
+		t.Fatalf("open fixture repository: %v", err)
+	}
+	rootCommit, err := repository.CommitObject(rootHash)
+	if err != nil {
+		t.Fatalf("get root commit: %v", err)
+	}
+	signature := object.Signature{Name: "Side Author", Email: "side@example.com", When: time.Now()}
+	sideCommit := &object.Commit{
+		Author:    signature,
+		Committer: signature,
+		Message:   "Independent history",
+		TreeHash:  rootCommit.TreeHash,
+	}
+	sideObject := repository.Storer.NewEncodedObject()
+	if err := sideCommit.Encode(sideObject); err != nil {
+		t.Fatalf("encode side commit: %v", err)
+	}
+	sideHash, err := repository.Storer.SetEncodedObject(sideObject)
+	if err != nil {
+		t.Fatalf("store side commit: %v", err)
+	}
+	if err := repository.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName("isolated"), sideHash)); err != nil {
+		t.Fatalf("create isolated branch: %v", err)
+	}
+	reopenAndRescan(t, repositoryService, repositoryData.Path)
+	if _, err := repositoryService.Cleanup(context.Background(), []string{sideHash.String()}, headHash.String(), false); !errors.Is(err, service.ErrCleanupUnsupported) {
+		t.Errorf("unreachable commit error = %v, want %v", err, service.ErrCleanupUnsupported)
+	}
+
+	headCommit, err := repository.CommitObject(headHash)
+	if err != nil {
+		t.Fatalf("get head commit: %v", err)
+	}
+	mergeCommit := &object.Commit{
+		Author:       signature,
+		Committer:    signature,
+		Message:      "Merge independent history",
+		TreeHash:     headCommit.TreeHash,
+		ParentHashes: []plumbing.Hash{headHash, sideHash},
+	}
+	mergeObject := repository.Storer.NewEncodedObject()
+	if err := mergeCommit.Encode(mergeObject); err != nil {
+		t.Fatalf("encode merge commit: %v", err)
+	}
+	mergeHash, err := repository.Storer.SetEncodedObject(mergeObject)
+	if err != nil {
+		t.Fatalf("store merge commit: %v", err)
+	}
+	headReference, err := repository.Head()
+	if err != nil {
+		t.Fatalf("get HEAD reference: %v", err)
+	}
+	if err := repository.Storer.SetReference(plumbing.NewHashReference(headReference.Name(), mergeHash)); err != nil {
+		t.Fatalf("move current branch to merge commit: %v", err)
+	}
+	reopenAndRescan(t, repositoryService, repositoryData.Path)
+	if _, err := repositoryService.Cleanup(context.Background(), []string{mergeHash.String()}, mergeHash.String(), false); !errors.Is(err, service.ErrCleanupUnsupported) {
+		t.Errorf("merge commit error = %v, want %v", err, service.ErrCleanupUnsupported)
+	}
+}
+
+func TestCleanupDropsSelectedCommitSynchronously(t *testing.T) {
+	repositoryService, _, updateHash, headHash := newCommitInspectionFixture(t)
+	newHead, err := repositoryService.Cleanup(context.Background(), []string{headHash.String()}, headHash.String(), false)
+	if err != nil {
+		t.Fatalf("cleanup selected commit: %v", err)
+	}
+	if newHead != updateHash.String() {
+		t.Errorf("new HEAD = %s, want %s", newHead, updateHash)
+	}
+	_, repositoryData, _ := repositoryService.GetCurrentRepository()
+	if repositoryData.Head == nil || *repositoryData.Head != newHead {
+		t.Errorf("current repository HEAD = %v, want %s", repositoryData.Head, newHead)
+	}
+	if repositoryData.AnalysisStatus != entity.RepoNotScanned {
+		t.Errorf("analysis status = %s, want %s", repositoryData.AnalysisStatus, entity.RepoNotScanned)
+	}
+	if _, err := repositoryService.GetCommit(updateHash.String()); !errors.Is(err, service.ErrRepositoryNotScanned) {
+		t.Errorf("stale scan error = %v, want %v", err, service.ErrRepositoryNotScanned)
+	}
+}
+
+func TestCleanupRejectsHeadChangedAfterScan(t *testing.T) {
+	repositoryService, _, _, scannedHead := newCommitInspectionFixture(t)
+	_, repositoryData, _ := repositoryService.GetCurrentRepository()
+	repository, err := git.PlainOpen(repositoryData.Path)
+	if err != nil {
+		t.Fatalf("open fixture repository: %v", err)
+	}
+	worktree, err := repository.Worktree()
+	if err != nil {
+		t.Fatalf("open fixture worktree: %v", err)
+	}
+	changedPath := filepath.Join(repositoryData.Path, "after-scan.txt")
+	if err := os.WriteFile(changedPath, []byte("changed after scan\n"), 0o644); err != nil {
+		t.Fatalf("write post-scan file: %v", err)
+	}
+	if _, err := worktree.Add("after-scan.txt"); err != nil {
+		t.Fatalf("stage post-scan file: %v", err)
+	}
+	if _, err := worktree.Commit("Change after scan", &git.CommitOptions{Author: &object.Signature{Name: "Alice Author", Email: "alice@example.com", When: time.Now()}}); err != nil {
+		t.Fatalf("commit after scan: %v", err)
+	}
+
+	if _, err := repositoryService.Cleanup(context.Background(), []string{scannedHead.String()}, scannedHead.String(), false); !errors.Is(err, service.ErrRepositoryChanged) {
+		t.Errorf("changed HEAD error = %v, want %v", err, service.ErrRepositoryChanged)
+	}
+}
+
+func TestCleanupAutoStashRestoresWorkingTree(t *testing.T) {
+	repositoryService, _, updateHash, headHash := newCommitInspectionFixture(t)
+	_, repositoryData, _ := repositoryService.GetCurrentRepository()
+	dirtyPath := filepath.Join(repositoryData.Path, "local-note.txt")
+	if err := os.WriteFile(dirtyPath, []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write local change: %v", err)
+	}
+
+	newHead, err := repositoryService.Cleanup(context.Background(), []string{headHash.String()}, headHash.String(), true)
+	if err != nil {
+		t.Fatalf("cleanup with auto stash: %v", err)
+	}
+	if newHead != updateHash.String() {
+		t.Errorf("new HEAD = %s, want %s", newHead, updateHash)
+	}
+	content, err := os.ReadFile(dirtyPath)
+	if err != nil {
+		t.Fatalf("read restored local change: %v", err)
+	}
+	if string(content) != "keep me" {
+		t.Errorf("restored local change = %q, want %q", content, "keep me")
+	}
+}
+
 func newCommitInspectionFixture(t *testing.T) (*service.RepositoriesSvr, plumbing.Hash, plumbing.Hash, plumbing.Hash) {
 	t.Helper()
 	repositoryPath := t.TempDir()
@@ -337,9 +534,58 @@ func newCommitInspectionRouter(repositoryService *service.RepositoriesSvr) *gin.
 	router := gin.New()
 	router.Use(middleware.RequestID())
 	repositoryHandler := handler.NewRepositoriesHandler(repositoryService)
+	router.GET("/api/v1/repositories/current/commits", repositoryHandler.GetCurrentCommits)
 	router.GET("/api/v1/repositories/current/commits/:sha", repositoryHandler.GetCommit)
 	router.GET("/api/v1/repositories/current/commits/:sha/files", repositoryHandler.GetFiles)
+	router.POST("/api/v1/repositories/current/cleanup", repositoryHandler.Cleanup)
 	return router
+}
+
+func reopenAndRescan(t *testing.T, repositoryService *service.RepositoriesSvr, repositoryPath string) {
+	t.Helper()
+	if _, _, err := repositoryService.OpenRepository(repositoryPath); err != nil {
+		t.Fatalf("reopen repository: %v", err)
+	}
+	_, err := repositoryService.ScanRepository(true)
+	if err != nil {
+		t.Fatalf("rescan repository: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, current, _ := repositoryService.GetCurrentRepository()
+		if current.AnalysisStatus == entity.RepoReady {
+			return
+		}
+		if current.AnalysisStatus == entity.RepoFailed {
+			t.Fatal("rescan failed")
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rescan did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func assertCleanupError(t *testing.T, router *gin.Engine, requestBody map[string]any, expectedStatus int, expectedCode string) {
+	t.Helper()
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		t.Fatalf("encode cleanup request: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/current/cleanup", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != expectedStatus {
+		t.Fatalf("cleanup status = %d, want %d; body=%s", response.Code, expectedStatus, response.Body.String())
+	}
+	var errorBody common.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &errorBody); err != nil {
+		t.Fatalf("decode cleanup error: %v", err)
+	}
+	if errorBody.Error.Code != expectedCode {
+		t.Errorf("cleanup code = %q, want %q", errorBody.Error.Code, expectedCode)
+	}
 }
 
 func performCommitInspectionRequest(router *gin.Engine, path string) *httptest.ResponseRecorder {

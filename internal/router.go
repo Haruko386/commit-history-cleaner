@@ -33,6 +33,7 @@ func (r *Router) Setup(e *gin.Engine) {
 			repositories.GET("current/commits", r.repoHandler.GetCurrentCommits)
 			repositories.GET("current/commits/:sha", r.repoHandler.GetCommit)
 			repositories.GET("current/commits/:sha/files", r.repoHandler.GetFiles)
+			repositories.POST("current/cleanup", r.repoHandler.Cleanup)
 			//repositories.GET("recent")
 		}
 

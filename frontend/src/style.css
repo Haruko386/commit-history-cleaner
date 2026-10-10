@@ -222,13 +222,16 @@ p, h1, h2 { margin-top: 0; }
 .commit-filter-form {
   padding: 16px;
   display: grid;
-  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(140px, 1fr)) auto;
+  grid-template-columns: minmax(220px, 2fr) repeat(5, minmax(140px, 1fr)) auto;
   align-items: end;
   gap: 12px;
 }
 .commit-filter-form label { min-width: 0; display: grid; gap: 6px; }
 .commit-filter-form label > span { font-size: 12px; font-weight: 600; }
 .commit-filter-form input { width: 100%; min-width: 0; }
+.size-filter-control { display: flex; }
+.size-filter-control input { border-radius: 6px 0 0 6px; }
+.size-filter-control select { min-width: 62px; padding: 5px 8px; border: 1px solid var(--border-default); border-left: 0; border-radius: 0 6px 6px 0; color: var(--fg-default); background: var(--canvas-default); }
 .filter-submit { white-space: nowrap; }
 .commit-list-header { justify-content: space-between; }
 .commit-list-header span { color: var(--fg-muted); font-size: 12px; }

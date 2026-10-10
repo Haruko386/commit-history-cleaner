@@ -2,7 +2,7 @@
 
 > 状态：Draft  
 > 面向阶段：浏览器端优先，后续接入 Wails  
-> 当前实现：`internal/router.go` 尚未注册任何路由，本文接口均为待实现契约。
+> 当前实现进度：见文末 API Checklist。
 
 ## 1. 目标
 
@@ -18,7 +18,7 @@ Frontend Service
 相同的业务请求与响应模型
 ```
 
-第一阶段只需要支持本地网页开发。历史重写、强制推送等破坏性操作暂不执行，只提供分析、预览和命令生成。
+第一阶段只需要支持本地网页开发。清理接口只重写本地仓库历史，不自动修改远端或执行 force push。
 
 ## 2. HTTP 约定
 
@@ -92,11 +92,11 @@ http://127.0.0.1:{port}/api/v1
 | 状态码 | 使用场景 |
 |---:|---|
 | `200` | 查询、更新成功 |
-| `201` | 创建扫描任务或清理计划成功 |
+| `201` | 创建扫描任务成功 |
 | `202` | 请求已接受，后台处理中 |
 | `204` | 关闭仓库、取消任务等无响应体操作成功 |
 | `400` | 请求格式或参数错误 |
-| `404` | 仓库、提交、对象、任务不存在 |
+| `404` | 仓库、提交或任务不存在 |
 | `409` | 当前状态冲突，例如已有扫描正在运行 |
 | `422` | 路径存在但不是有效 Git 仓库等业务校验失败 |
 | `500` | 未预期内部错误 |
@@ -116,7 +116,7 @@ http://127.0.0.1:{port}/api/v1
 | `GET` | `/repositories/recent` | 最近打开的仓库 |
 | `DELETE` | `/repositories/recent/{repositoryId}` | 删除一条最近记录 |
 
-### P1：历史与对象分析
+### P1：提交历史分析
 
 | Method | Path | 用途 |
 |---|---|---|
@@ -126,18 +126,12 @@ http://127.0.0.1:{port}/api/v1
 | `GET` | `/repositories/current/commits` | 分页获取提交历史 |
 | `GET` | `/repositories/current/commits/{sha}` | 获取提交详情 |
 | `GET` | `/repositories/current/commits/{sha}/files` | 获取提交文件变化 |
-| `GET` | `/repositories/current/storage` | 获取存储概览 |
-| `GET` | `/repositories/current/objects` | 获取历史对象列表 |
-| `GET` | `/repositories/current/objects/{oid}` | 获取对象详情及出现位置 |
 
-### P2：清理预览与命令生成
+### P2：提交历史清理
 
 | Method | Path | 用途 |
 |---|---|---|
-| `POST` | `/cleanup/plans` | 创建清理预览 |
-| `GET` | `/cleanup/plans/{planId}` | 获取清理预览 |
-| `DELETE` | `/cleanup/plans/{planId}` | 删除清理预览 |
-| `POST` | `/cleanup/plans/{planId}/commands` | 生成命令方案 |
+| `POST` | `/repositories/current/cleanup` | 删除选中的 commit 并重写当前分支历史 |
 
 ## 4. P0 接口
 
@@ -355,7 +349,7 @@ GET /api/v1/tasks/{taskId}
 | `taskId` | `string` | 任务 ID |
 | `type` | `repository_scan` | 任务类型 |
 | `status` | `queued \| running \| completed \| failed \| cancelled` | 任务状态 |
-| `progress.phase` | `string` | 当前阶段，例如 `commits`、`objects`、`storage` |
+| `progress.phase` | `string` | 当前阶段，例如 `commits` |
 | `progress.current` | `number` | 当前完成量 |
 | `progress.total` | `number \| null` | 总量未知时为 null |
 | `progress.percent` | `number \| null` | `0..100`，无法估算时为 null |
@@ -383,6 +377,9 @@ Query：
 | `since` | RFC3339 | — | 起始时间 |
 | `until` | RFC3339 | — | 结束时间 |
 | `ref` | string | `HEAD` | 分支、标签或 SHA |
+| `minIntroducedBytes` | number | `0` | 仅返回 `stats.introducedBytes` 大于或等于该字节数的提交 |
+
+`minIntroducedBytes` 必须是大于或等于 0 的整数。前端改变任一筛选条件后必须清空旧 cursor，并从第一页重新请求。
 
 响应项 `CommitSummary`：
 
@@ -536,130 +533,59 @@ Query：
 | `409` | `REPOSITORY_NOT_SCANNED` | 仓库尚未完成扫描 |
 | `500` | `INTERNAL_ERROR` | 无法读取提交 tree、父提交或 blob |
 
-### 5.6 存储概览
-
-```http
-GET /api/v1/repositories/current/storage
-```
-
-```json
-{
-  "data": {
-    "gitDirectoryBytes": 1954210112,
-    "workingTreeBytes": 132120576,
-    "historicalOnlyBytes": 1406601789,
-    "largestBlobBytes": 399507456,
-    "objectCount": 4281,
-    "lastAnalyzedAt": "2026-10-06T14:35:00+08:00"
-  },
-  "meta": {
-    "requestId": "req_01J..."
-  }
-}
-```
-
-估算值必须在字段名或额外标志中明确标识；不要把估算结果当作精确可回收空间。
-
-### 5.7 历史对象列表
-
-```http
-GET /api/v1/repositories/current/objects
-```
-
-Query：
-
-| 参数 | 类型 | 默认值 | 说明 |
-|---|---|---:|---|
-| `cursor` | string | — | 分页 cursor |
-| `limit` | number | `50` | `1..100` |
-| `scope` | `all \| head \| historical_only` | `all` | 对象范围 |
-| `extension` | string | — | 扩展名过滤，如 `.mp4` |
-| `minBytes` | number | `0` | 最小对象大小 |
-| `sort` | `size \| firstSeen \| lastSeen \| path` | `size` | 排序字段 |
-| `order` | `asc \| desc` | `desc` | 排序方向 |
-
-响应项 `HistoricalObject`：
-
-```json
-{
-  "oid": "5e884898da28047151d0e56f8dc6292773603d0d",
-  "type": "blob",
-  "sizeBytes": 399507456,
-  "representativePath": "assets/demo.mp4",
-  "extensions": [".mp4"],
-  "firstSeenCommit": "1ce1dd6b1f...",
-  "lastSeenCommit": "f6ff93b708...",
-  "inHead": false,
-  "historicalOnly": true,
-  "occurrenceCount": 42
-}
-```
-
-### 5.8 对象详情
-
-```http
-GET /api/v1/repositories/current/objects/{oid}
-```
-
-响应在 `HistoricalObject` 基础上增加 `occurrences`：
-
-```json
-{
-  "occurrences": [
-    {
-      "commitSha": "1ce1dd6b1f...",
-      "path": "assets/demo.mp4",
-      "firstForPath": true,
-      "lastForPath": false
-    }
-  ]
-}
-```
-
-对象出现次数很大时，`occurrences` 应改为独立分页字段或接口；前端不得假定所有 occurrence 一次返回。
-
 ## 6. P2 接口
 
-### 6.1 创建清理计划
+### 6.1 清理选中的提交历史
 
 ```http
-POST /api/v1/cleanup/plans
+POST /api/v1/repositories/current/cleanup
+Content-Type: application/json
 ```
 
-请求：
+该接口从当前分支历史中删除用户选中的 commit，并重新生成这些 commit 之后的历史。它不是 `git rm`，也不是只删除工作区文件。
+
+清理在本地仓库中同步执行，不会自动 push 或 force push。成功后，用户必须先检查重写结果，再自行更新远端。只有远端所有 branch/tag 都不再引用旧历史时，之后的 `git clone` 才不会继续下载旧对象。
+
+请求体：
 
 ```json
 {
-  "targets": [
-    { "type": "path", "value": "assets/demo.mp4" },
-    { "type": "object", "value": "5e884898da28047151d0e56f8dc6292773603d0d" }
-  ]
+  "commitShas": [
+    "8b1a9953c4611296a827abf8c47804d7f8e4f2d1"
+  ],
+  "expectedHead": "f6ff93b7080b50aa86061d173e2a0c0f7f20b28d",
+  "autoStash": false
 }
 ```
 
-`type`：`path | commit | object | pattern`
+| 字段 | 类型 | 必需 | 说明 |
+|---|---|---:|---|
+| `commitShas` | `string[]` | 是 | 需要从当前分支历史中删除的完整 40 位 SHA；不能为空或重复 |
+| `expectedHead` | `string` | 是 | 用户确认时看到的完整 HEAD SHA，用于阻止在仓库已经变化后继续清理 |
+| `autoStash` | `boolean` | 否 | 默认 `false`；为 `true` 时清理前临时 stash 工作区和未跟踪文件，结束后恢复 |
 
-响应：
+MVP 约束：
+
+- 只重写当前本地分支，不处理 detached HEAD。
+- 工作区和暂存区必须干净。
+- 仓库必须已经完成扫描，且 `expectedHead` 必须等于当前 HEAD。
+- 目标 commit 必须存在于当前仓库、可从当前 HEAD 到达，并且不能是根提交或 merge commit。
+- 只处理当前分支。其他 branch/tag 不会被修改，用户需要自行更新；只要它们仍引用旧历史，旧对象仍可能出现在新的 clone 中。
+- 接口不承诺 `.git` 目录立即变小；本地 reflog、未回收对象和 pack 文件仍可能保留旧数据。
+- 当前版本不计算“删除后是否改变当前文件”。前端必须在提交前显示统一的历史重写警告。
+
+接口同步执行：HTTP 请求会一直等待历史重写和可选 stash 恢复完成，成功返回 `200 OK`，失败直接返回对应错误。
+
+成功响应：
 
 ```json
 {
   "data": {
-    "planId": "plan_01J...",
-    "repositoryId": "repo_01J...",
-    "repositoryHead": "8b1a9953c4611296a827abf8c47804d7f8e4f2d1",
-    "targets": [],
-    "affectedCommitCount": 42,
-    "affectedBranches": ["main"],
-    "affectedTags": ["v1.0.0"],
-    "estimatedReclaimableBytes": 592445440,
-    "warnings": [
-      {
-        "code": "COMMIT_IDS_WILL_CHANGE",
-        "severity": "danger",
-        "message": "History rewriting changes commit IDs."
-      }
-    ],
-    "createdAt": "2026-10-06T14:40:00+08:00"
+    "previousHead": "f6ff93b7080b50aa86061d173e2a0c0f7f20b28d",
+    "newHead": "4ad8e85618d744f6ef870dd15ac98e12846f22e1",
+    "droppedCommitShas": [
+      "8b1a9953c4611296a827abf8c47804d7f8e4f2d1"
+    ]
   },
   "meta": {
     "requestId": "req_01J..."
@@ -667,66 +593,20 @@ POST /api/v1/cleanup/plans
 }
 ```
 
-计划绑定创建时的 `repositoryHead`。生成命令前如果 HEAD 已变化，返回 `409 / REPOSITORY_CHANGED`，要求重新生成计划。
+成功后，服务端必须使原扫描结果失效；前端重新获取当前仓库并提示用户再次扫描。远端更新不属于该请求。
 
-### 6.2 生成命令方案
+可能错误：
 
-```http
-POST /api/v1/cleanup/plans/{planId}/commands
-```
-
-请求：
-
-```json
-{
-  "tool": "git-filter-repo",
-  "includeRemoteUpdate": false
-}
-```
-
-响应：
-
-```json
-{
-  "data": {
-    "planId": "plan_01J...",
-    "groups": [
-      {
-        "type": "backup",
-        "title": "Backup",
-        "commands": [
-          {
-            "command": "git clone --mirror ...",
-            "description": "Create a mirror backup before rewriting history.",
-            "dangerous": false
-          }
-        ]
-      },
-      {
-        "type": "rewrite",
-        "title": "Rewrite",
-        "commands": []
-      },
-      {
-        "type": "verify",
-        "title": "Verify",
-        "commands": []
-      },
-      {
-        "type": "push",
-        "title": "Push",
-        "commands": []
-      }
-    ],
-    "requiresExplicitConfirmation": true
-  },
-  "meta": {
-    "requestId": "req_01J..."
-  }
-}
-```
-
-MVP 只返回命令文本，不提供“执行命令”接口。
+| HTTP | code | 说明 |
+|---:|---|---|
+| `400` | `INVALID_REQUEST` | SHA 格式无效、列表为空或包含重复值 |
+| `404` | `NO_REPOSITORY_OPEN` | 当前没有打开仓库 |
+| `404` | `COMMIT_NOT_FOUND` | 某个 SHA 不属于当前仓库 |
+| `409` | `REPOSITORY_NOT_SCANNED` | 仓库尚未完成扫描 |
+| `409` | `REPOSITORY_CHANGED` | 当前 HEAD 与 `expectedHead` 不一致 |
+| `409` | `WORKING_TREE_DIRTY` | 工作区或暂存区存在未提交修改 |
+| `422` | `CLEANUP_UNSUPPORTED` | detached HEAD、根提交、merge commit 或目标不在当前分支历史中 |
+| `500` | `GIT_COMMAND_FAILED` | Git 历史重写失败；错误响应不得包含 token 等敏感信息 |
 
 ## 7. 稳定错误码
 
@@ -737,12 +617,13 @@ MVP 只返回命令文本，不提供“执行命令”接口。
 | `REPOSITORY_NOT_FOUND` | 404 | 显示路径不存在 |
 | `NO_REPOSITORY_OPEN` | 404 | 返回欢迎页 |
 | `COMMIT_NOT_FOUND` | 404 | 关闭提交详情并刷新 |
-| `OBJECT_NOT_FOUND` | 404 | 关闭对象详情并刷新 |
 | `TASK_NOT_FOUND` | 404 | 停止轮询 |
 | `NOT_A_GIT_REPOSITORY` | 422 | 显示无效仓库状态 |
 | `PATH_NOT_READABLE` | 422 | 显示权限错误 |
 | `SCAN_ALREADY_RUNNING` | 409 | 继续跟踪已有任务 |
-| `REPOSITORY_CHANGED` | 409 | 废弃清理计划并要求重建 |
+| `REPOSITORY_CHANGED` | 409 | 刷新仓库状态并要求用户重新确认 |
+| `WORKING_TREE_DIRTY` | 409 | 要求用户先提交或暂存当前修改 |
+| `CLEANUP_UNSUPPORTED` | 422 | 提示当前提交结构暂不支持自动清理 |
 | `GIT_NOT_AVAILABLE` | 503 | 显示 Git 安装提示 |
 | `HEALTH_CHECK_TIMEOUT` | 503 | 提示稍后重试 |
 | `HEALTH_CHECK_CANCELLED` | 503 | 停止当前请求，可重新检查 |
@@ -778,16 +659,8 @@ HistoryService
   getCommit(sha)
   listCommitFiles(sha, query)
 
-ObjectService
-  getStorageOverview()
-  listObjects(query)
-  getObject(oid)
-
 CleanupService
-  createPlan(targets)
-  getPlan(planId)
-  deletePlan(planId)
-  generateCommands(planId, options)
+  cleanup(commitShas, expectedHead, autoStash)
 ```
 
 页面和 store 只调用这些 service。HTTP 阶段由 `Http*Service` 实现；Wails 阶段由 `Wails*Service` 实现，组件和 store 不需要重写。
@@ -811,9 +684,7 @@ CleanupService
 | `POST /repositories/current/scans` | `StartRepositoryScan(force)` |
 | `GET /tasks/{taskId}` | `GetTask(taskId)` |
 | `GET /repositories/current/commits` | `ListCommits(query)` |
-| `GET /repositories/current/objects` | `ListObjects(query)` |
-| `POST /cleanup/plans` | `CreateCleanupPlan(request)` |
-| `POST /cleanup/plans/{planId}/commands` | `GenerateCleanupCommands(request)` |
+| `POST /repositories/current/cleanup` | `CleanupHistory(request)` |
 
 ## 10. 验收顺序
 
@@ -822,10 +693,8 @@ CleanupService
 3. 最近仓库。
 4. 扫描任务和进度。
 5. 提交列表、详情、文件变化。
-6. 存储概览和历史对象。
-7. 清理计划。
-8. 命令生成。
-9. 最后增加 Wails adapter。
+6. 提交历史清理。
+7. 最后增加 Wails adapter。
 
 每个接口至少覆盖：正常响应、空状态、无效参数、Git CLI 不可用和仓库在请求期间发生变化。
 
@@ -883,21 +752,16 @@ CleanupService
 - [ ] `DELETE /api/v1/repositories/recent/{repositoryId}`
 - [x] `GET /api/v1/github/connection`（独立 GitHub 连通性接口）
 
-### P1：历史与对象分析
+### P1：提交历史分析
 
 - [x] `POST /api/v1/repositories/current/scans`
 - [x] `GET /api/v1/tasks/{taskId}`
 - [x] `DELETE /api/v1/tasks/{taskId}`
 - [x] `GET /api/v1/repositories/current/commits`
+- [x] `GET /api/v1/repositories/current/commits` 支持 `minIntroducedBytes` 筛选
 - [x] `GET /api/v1/repositories/current/commits/{sha}`
 - [x] `GET /api/v1/repositories/current/commits/{sha}/files`
-- [ ] `GET /api/v1/repositories/current/storage`
-- [ ] `GET /api/v1/repositories/current/objects`
-- [ ] `GET /api/v1/repositories/current/objects/{oid}`
 
-### P2：清理预览与命令生成
+### P2：提交历史清理
 
-- [ ] `POST /api/v1/cleanup/plans`
-- [ ] `GET /api/v1/cleanup/plans/{planId}`
-- [ ] `DELETE /api/v1/cleanup/plans/{planId}`
-- [ ] `POST /api/v1/cleanup/plans/{planId}/commands`
+- [ ] `POST /api/v1/repositories/current/cleanup`

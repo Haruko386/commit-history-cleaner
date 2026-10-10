@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -45,6 +47,11 @@ var (
 	ErrInvalidCommitSHA     = errors.New("invalid commit SHA")
 	ErrCommitNotFound       = errors.New("commit not found")
 	ErrInvalidCommitQuery   = errors.New("invalid commit file query")
+	ErrInvalidCleanup       = errors.New("invalid cleanup request")
+	ErrRepositoryChanged    = errors.New("repository HEAD has changed")
+	ErrWorkingTreeDirty     = errors.New("working tree is dirty")
+	ErrCleanupUnsupported   = errors.New("cleanup is unsupported for this commit history")
+	ErrGitCommandFailed     = errors.New("Git command failed")
 )
 
 // TODO do a refactor for repo struct, create an entity for it
@@ -340,6 +347,10 @@ func createNewTask(parentCtx context.Context) *entity.Task {
 }
 
 func (s *RepositoriesSvr) GetCurrentCommits(commitQuery *entity.CommitsQuery) ([]entity.CommitSummary, string, error) {
+	if commitQuery.MinIntroducedBytes < 0 {
+		return nil, "", ErrInvalidCommitQuery
+	}
+
 	s.mu.RLock()
 	if s.current == nil {
 		s.mu.RUnlock()
@@ -508,6 +519,11 @@ func matchQuery(commitInfo *entity.CommitInfo, query *entity.CommitsQuery) bool 
 	}
 	if query.Until != nil {
 		if commitInfo.CommittedAt.After(*query.Until) {
+			return false
+		}
+	}
+	if query.MinIntroducedBytes != 0 {
+		if commitInfo.Stats.IntroducedBytes < query.MinIntroducedBytes {
 			return false
 		}
 	}
@@ -747,4 +763,204 @@ func sortCommitFiles(commitFiles []entity.CommitFile, sortName, order string) {
 	default:
 		return
 	}
+}
+
+func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expectedHead string, autoStash bool) (newHead string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.current == nil {
+		return "", ErrNoRepositoryOpen
+	}
+	if s.current.Head == nil || s.current.DetachedHead {
+		return "", ErrCleanupUnsupported
+	}
+	if s.current.AnalysisStatus != entity.RepoReady {
+		return "", ErrRepositoryNotScanned
+	}
+	if len(commitShas) == 0 {
+		return "", ErrInvalidCleanup
+	}
+
+	selected := make(map[string]struct{}, len(commitShas))
+	for index, sha := range commitShas {
+		sha = strings.ToLower(strings.TrimSpace(sha))
+		if !isFullCommitSHA(sha) {
+			return "", ErrInvalidCommitSHA
+		}
+		if _, exists := selected[sha]; exists {
+			return "", ErrInvalidCleanup
+		}
+		selected[sha] = struct{}{}
+		commitShas[index] = sha
+	}
+
+	expectedHead = strings.ToLower(strings.TrimSpace(expectedHead))
+	if !isFullCommitSHA(expectedHead) {
+		return "", ErrInvalidCommitSHA
+	}
+	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = s.current.Path
+	headOutput, err := headCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("%w: read current HEAD: %v", ErrGitCommandFailed, err)
+	}
+	if strings.ToLower(*s.current.Head) != expectedHead || strings.ToLower(strings.TrimSpace(string(headOutput))) != expectedHead {
+		return "", ErrRepositoryChanged
+	}
+
+	repoID := common.GenerateRepoID(s.current.Path)
+	s.taskSvr.worker.mu.Lock()
+	repoCommitSHAs, scanned := s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs[repoID]
+	if !scanned {
+		s.taskSvr.worker.mu.Unlock()
+		return "", ErrRepositoryNotScanned
+	}
+	for sha := range selected {
+		if _, exists := repoCommitSHAs[sha]; !exists {
+			s.taskSvr.worker.mu.Unlock()
+			return "", fmt.Errorf("%w: %s", ErrCommitNotFound, sha)
+		}
+	}
+
+	reachable := make(map[string]struct{})
+	stack := []string{expectedHead}
+	for len(stack) > 0 {
+		sha := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, visited := reachable[sha]; visited {
+			continue
+		}
+		commit, exists := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+		if !exists {
+			continue
+		}
+		reachable[sha] = struct{}{}
+		stack = append(stack, commit.ParentSHAs...)
+	}
+	for sha := range selected {
+		if _, exists := reachable[sha]; !exists {
+			s.taskSvr.worker.mu.Unlock()
+			return "", fmt.Errorf("%w: commit %s is not reachable from HEAD", ErrCleanupUnsupported, sha)
+		}
+		commit := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+		if len(commit.ParentSHAs) != 1 {
+			s.taskSvr.worker.mu.Unlock()
+			return "", fmt.Errorf("%w: commit %s is a root or merge commit", ErrCleanupUnsupported, sha)
+		}
+	}
+
+	firstParentHistory := make([]entity.CommitInfo, 0)
+	for sha := expectedHead; sha != ""; {
+		commit, exists := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+		if !exists {
+			break
+		}
+		firstParentHistory = append(firstParentHistory, commit)
+		if len(commit.ParentSHAs) == 0 {
+			break
+		}
+		sha = commit.ParentSHAs[0]
+	}
+
+	oldestSelectedIndex := -1
+	selectedOnFirstParent := 0
+	for index, commit := range firstParentHistory {
+		if _, exists := selected[commit.SHA]; exists {
+			oldestSelectedIndex = index
+			selectedOnFirstParent++
+		}
+	}
+	if selectedOnFirstParent != len(selected) {
+		s.taskSvr.worker.mu.Unlock()
+		return "", fmt.Errorf("%w: selected commits must be on the current branch first-parent history", ErrCleanupUnsupported)
+	}
+	for index := 0; index < oldestSelectedIndex; index++ {
+		if len(firstParentHistory[index].ParentSHAs) > 1 {
+			s.taskSvr.worker.mu.Unlock()
+			return "", fmt.Errorf("%w: the rewritten commit range contains a merge commit", ErrCleanupUnsupported)
+		}
+	}
+	upstream := firstParentHistory[oldestSelectedIndex].ParentSHAs[0]
+	s.taskSvr.worker.mu.Unlock()
+
+	// exec command
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = s.current.Path
+	statusOutput, err := statusCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: git status failed: %v", ErrGitCommandFailed, err)
+	}
+	dirty := len(bytes.TrimSpace(statusOutput)) > 0
+	if dirty && !autoStash {
+		return "", ErrWorkingTreeDirty
+	}
+
+	if dirty {
+		stashCmd := exec.CommandContext(ctx, "git", "stash", "push", "--include-untracked", "-m", "auto-stash-before-rebase")
+		stashCmd.Dir = s.current.Path
+		if output, stashErr := stashCmd.CombinedOutput(); stashErr != nil {
+			return "", fmt.Errorf("%w: git stash failed: %v: %s", ErrGitCommandFailed, stashErr, strings.TrimSpace(string(output)))
+		}
+		defer func() {
+			popCmd := exec.CommandContext(context.Background(), "git", "stash", "pop")
+			popCmd.Dir = s.current.Path
+			if output, popErr := popCmd.CombinedOutput(); popErr != nil && err == nil {
+				err = fmt.Errorf("%w: history was rewritten but git stash pop failed: %v: %s", ErrGitCommandFailed, popErr, strings.TrimSpace(string(output)))
+			}
+		}()
+	}
+
+	tempFile, err := os.CreateTemp("", "git-drop-editor-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("failed to create rebase editor: %w", err)
+	}
+	defer os.Remove(tempFile.Name())
+	if _, err := tempFile.Write([]byte(common.EditorScript)); err != nil {
+		tempFile.Close()
+		return "", err
+	}
+	if err := tempFile.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(tempFile.Name(), 0o755); err != nil {
+		return "", err
+	}
+
+	env := append(os.Environ(),
+		"GIT_SEQUENCE_EDITOR=sh "+strconv.Quote(filepath.ToSlash(tempFile.Name())),
+		"TARGET_SHAS="+strings.Join(commitShas, " "),
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	rebaseCmd := exec.CommandContext(ctx, "git", "-c", "core.abbrev=40", "rebase", "-i", upstream)
+	rebaseCmd.Dir = s.current.Path
+	rebaseCmd.Env = env
+	if output, rebaseErr := rebaseCmd.CombinedOutput(); rebaseErr != nil {
+		abortCmd := exec.CommandContext(context.Background(), "git", "rebase", "--abort")
+		abortCmd.Dir = s.current.Path
+		_ = abortCmd.Run()
+		return "", fmt.Errorf("%w: git rebase failed: %v: %s", ErrGitCommandFailed, rebaseErr, strings.TrimSpace(string(output)))
+	}
+
+	headCmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = s.current.Path
+	headOutput, err = headCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("%w: read rewritten HEAD: %v", ErrGitCommandFailed, err)
+	}
+	newHead = strings.TrimSpace(string(headOutput))
+	s.current.Head = &newHead
+	s.current.AnalysisStatus = entity.RepoNotScanned
+	if dirty {
+		s.current.WorkingTreeStatus = "dirty"
+	} else {
+		s.current.WorkingTreeStatus = "clean"
+	}
+
+	s.taskSvr.worker.mu.Lock()
+	delete(s.taskSvr.worker.scannedRepoInfo.RepoCommits, repoID)
+	delete(s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs, repoID)
+	s.taskSvr.worker.mu.Unlock()
+
+	return newHead, nil
 }
