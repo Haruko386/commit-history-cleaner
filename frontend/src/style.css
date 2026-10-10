@@ -104,6 +104,8 @@ p, h1, h2 { margin-top: 0; }
 .button svg { width: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .button-primary { color: #fff; background: var(--success-emphasis); border-color: rgba(31, 35, 40, 0.15); }
 .button-primary:hover { color: #fff; background: var(--success-emphasis-hover); }
+.button-danger { color: var(--danger-fg); background: var(--canvas-default); border-color: var(--danger-border); }
+.button-danger:hover { color: #fff; background: var(--danger-fg); border-color: var(--danger-fg); }
 .button:disabled { color: var(--fg-muted); background: var(--canvas-subtle); cursor: not-allowed; opacity: 0.7; }
 
 .backend-status { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12px; }
@@ -235,11 +237,16 @@ p, h1, h2 { margin-top: 0; }
 .filter-submit { white-space: nowrap; }
 .commit-list-header { justify-content: space-between; }
 .commit-list-header span { color: var(--fg-muted); font-size: 12px; }
+.commit-list-actions { display: flex; align-items: center; gap: 12px; }
 .commit-message { min-height: 96px; padding: 24px; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--fg-muted); text-align: center; }
 .commit-message-error { color: var(--danger-fg); }
 .commit-list { margin: 0; padding: 0; list-style: none; }
-.commit-row { width: 100%; min-height: 72px; padding: 12px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; border: 0; border-bottom: 1px solid var(--border-muted); color: var(--fg-default); background: var(--canvas-default); text-align: left; cursor: pointer; }
-.commit-list li:last-child .commit-row { border-bottom: 0; }
+.commit-list-item { display: grid; grid-template-columns: 44px minmax(0, 1fr); border-bottom: 1px solid var(--border-muted); }
+.commit-list-item:last-child { border-bottom: 0; }
+.commit-list-item-selected { background: var(--canvas-subtle); }
+.commit-selection { display: grid; place-items: center; cursor: pointer; }
+.commit-selection input, .cleanup-options input { width: 16px; height: 16px; min-height: 0; margin: 0; box-shadow: none; }
+.commit-row { width: 100%; min-height: 72px; padding: 12px 16px 12px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; border: 0; color: var(--fg-default); background: transparent; text-align: left; cursor: pointer; }
 .commit-row:hover { background: var(--canvas-subtle); }
 .commit-main { min-width: 0; }
 .commit-subject-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
@@ -290,6 +297,40 @@ p, h1, h2 { margin-top: 0; }
 .line-additions { color: var(--success-emphasis); }
 .line-deletions { color: var(--danger-fg); }
 
+.cleanup-page { display: grid; gap: 16px; }
+.cleanup-header { justify-content: space-between; gap: 16px; }
+.cleanup-header > div { display: grid; gap: 2px; }
+.cleanup-header span { color: var(--fg-muted); font-size: 12px; }
+.cleanup-commit-list { margin: 0; padding: 0; list-style: none; }
+.cleanup-commit-list li { min-height: 64px; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border-muted); }
+.cleanup-commit-list li:last-child { border-bottom: 0; }
+.cleanup-commit-list li > div { min-width: 0; display: grid; gap: 4px; }
+.cleanup-commit-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cleanup-commit-list code, .affected-commit code { color: var(--fg-muted); font: 12px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; overflow-wrap: anywhere; }
+.cleanup-options { padding: 16px; border-top: 1px solid var(--border-default); background: var(--canvas-subtle); }
+.cleanup-options label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.cleanup-options input { margin-top: 2px; }
+.cleanup-options span { display: grid; gap: 2px; }
+.cleanup-options small { color: var(--fg-muted); font-size: 12px; }
+.cleanup-warning { border-color: var(--attention-border); }
+.cleanup-warning .box-header { background: var(--attention-subtle); }
+.cleanup-warning-body, .cleanup-result-body { padding: 16px; }
+.cleanup-warning-body > p, .cleanup-result-body > p { color: var(--fg-muted); line-height: 1.5; }
+.affected-commit + .affected-commit { margin-top: 16px; }
+.affected-commit ul { margin: 8px 0 0; padding-left: 24px; }
+.affected-commit li + li { margin-top: 4px; }
+.cleanup-submit { padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.cleanup-submit > div:first-child { display: grid; gap: 3px; }
+.cleanup-submit span { color: var(--fg-muted); font-size: 12px; }
+.cleanup-submit-actions { display: flex; gap: 8px; }
+.cleanup-heads { margin: 0 0 16px; display: grid; gap: 10px; }
+.cleanup-heads div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; }
+.cleanup-heads dt { color: var(--fg-muted); }
+.cleanup-heads dd { margin: 0; overflow-wrap: anywhere; }
+.push-command { margin-bottom: 16px; padding: 10px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--canvas-subtle); }
+.push-command code { min-width: 0; flex: 1; overflow-wrap: anywhere; font: 12px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+.cleanup-help { font-size: 12px; }
+
 @media (max-width: 768px) {
   .global-header { min-height: 56px; padding: 12px 16px; }
   .app-identity strong, .backend-status { display: none; }
@@ -314,6 +355,8 @@ p, h1, h2 { margin-top: 0; }
   .file-sort { flex-wrap: wrap; }
   .file-row { grid-template-columns: 88px minmax(0, 1fr) auto; }
   .file-lines { grid-column: 2 / -1; justify-content: flex-start; }
+  .cleanup-submit { align-items: stretch; flex-direction: column; }
+  .cleanup-submit-actions { justify-content: flex-end; }
 }
 
 @media (max-width: 480px) {
@@ -338,6 +381,13 @@ p, h1, h2 { margin-top: 0; }
   .file-row { grid-template-columns: 1fr auto; }
   .file-status { grid-column: 1 / -1; }
   .file-lines { grid-column: 1 / -1; }
+  .commit-list-header { align-items: stretch; flex-direction: column; }
+  .commit-list-actions { justify-content: space-between; }
+  .cleanup-commit-list li { align-items: stretch; flex-direction: column; }
+  .cleanup-commit-list li .button { width: fit-content; }
+  .cleanup-submit-actions { flex-direction: column; }
+  .cleanup-heads div { grid-template-columns: 1fr; gap: 3px; }
+  .push-command { align-items: stretch; flex-direction: column; }
 }
 
 @media (prefers-reduced-motion: reduce) {

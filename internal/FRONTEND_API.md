@@ -131,6 +131,7 @@ http://127.0.0.1:{port}/api/v1
 
 | Method | Path | 用途 |
 |---|---|---|
+| `POST` | `/repositories/current/cleanup/preview` | 检查选中 commit 的文件路径是否仍存在于当前 HEAD |
 | `POST` | `/repositories/current/cleanup` | 删除选中的 commit 并重写当前分支历史 |
 
 ## 4. P0 接口
@@ -535,7 +536,62 @@ Query：
 
 ## 6. P2 接口
 
-### 6.1 清理选中的提交历史
+### 6.1 预览清理影响
+
+```http
+POST /api/v1/repositories/current/cleanup/preview
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "commitShas": [
+    "8b1a9953c4611296a827abf8c47804d7f8e4f2d1"
+  ],
+  "expectedHead": "f6ff93b7080b50aa86061d173e2a0c0f7f20b28d"
+}
+```
+
+Preview 会检查选中 commit 修改过的路径是否仍存在于 `expectedHead` 对应的 tree 中。它只用于提醒，不保证完整预测 rebase 结果，也不追踪文件后续的重命名。
+
+响应：
+
+```json
+{
+  "data": {
+    "requiresConfirmation": true,
+    "affectedFiles": {
+      "8b1a9953c4611296a827abf8c47804d7f8e4f2d1": [
+        "src/example.go",
+        "assets/example.bin"
+      ]
+    }
+  },
+  "meta": {
+    "requestId": "req_01J..."
+  }
+}
+```
+
+`affectedFiles` 按 commit SHA 分组。没有匹配路径时返回空对象且 `requiresConfirmation` 为 `false`。格式有效但不在当前扫描结果中的 SHA 会被 Preview 跳过；真正执行 Cleanup 时仍会返回 `COMMIT_NOT_FOUND`。
+
+Preview 与 Cleanup 共用仓库状态、HEAD、可达性、根提交、merge commit 和 first-parent 检查。前端第一次点击清理时先调用 Preview：没有提醒则直接执行 Cleanup；有提醒则展示文件列表，并仅在用户点击 `Cleanup anyway` 后执行 Cleanup。
+
+可能错误：
+
+| HTTP | code | 说明 |
+|---:|---|---|
+| `400` | `INVALID_REQUEST` | SHA 格式无效、列表为空或包含重复值 |
+| `404` | `NO_REPOSITORY_OPEN` | 当前没有打开仓库 |
+| `409` | `REPOSITORY_NOT_SCANNED` | 仓库尚未完成扫描 |
+| `409` | `REPOSITORY_CHANGED` | 当前 HEAD 与 `expectedHead` 不一致 |
+| `422` | `CLEANUP_UNSUPPORTED` | detached HEAD、根提交、merge commit 或目标不在当前 first-parent 历史中 |
+| `500` | `GIT_COMMAND_FAILED` | 无法读取当前 Git HEAD |
+| `500` | `INTERNAL_ERROR` | 无法读取 HEAD tree 或检查文件路径 |
+
+### 6.2 清理选中的提交历史
 
 ```http
 POST /api/v1/repositories/current/cleanup
@@ -567,12 +623,12 @@ Content-Type: application/json
 MVP 约束：
 
 - 只重写当前本地分支，不处理 detached HEAD。
-- 工作区和暂存区必须干净。
+- 工作区和暂存区必须干净；或者请求显式设置 `autoStash: true`，由服务端临时保存并在清理后恢复。
 - 仓库必须已经完成扫描，且 `expectedHead` 必须等于当前 HEAD。
 - 目标 commit 必须存在于当前仓库、可从当前 HEAD 到达，并且不能是根提交或 merge commit。
 - 只处理当前分支。其他 branch/tag 不会被修改，用户需要自行更新；只要它们仍引用旧历史，旧对象仍可能出现在新的 clone 中。
 - 接口不承诺 `.git` 目录立即变小；本地 reflog、未回收对象和 pack 文件仍可能保留旧数据。
-- 当前版本不计算“删除后是否改变当前文件”。前端必须在提交前显示统一的历史重写警告。
+- 前端必须先调用 Preview，并在存在受影响路径时要求用户再次确认。
 
 接口同步执行：HTTP 请求会一直等待历史重写和可选 stash 恢复完成，成功返回 `200 OK`，失败直接返回对应错误。
 
@@ -660,6 +716,7 @@ HistoryService
   listCommitFiles(sha, query)
 
 CleanupService
+  preview(commitShas, expectedHead)
   cleanup(commitShas, expectedHead, autoStash)
 ```
 
@@ -764,4 +821,5 @@ CleanupService
 
 ### P2：提交历史清理
 
-- [ ] `POST /api/v1/repositories/current/cleanup`
+- [x] `POST /api/v1/repositories/current/cleanup/preview`
+- [x] `POST /api/v1/repositories/current/cleanup`
