@@ -296,26 +296,7 @@ func (h *RepositoriesHandler) Cleanup(c *gin.Context) {
 
 	newHead, err := h.repoSvr.Cleanup(c.Request.Context(), req.CommitSHAs, req.ExpectedHead, req.AutoStash)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrInvalidCleanup), errors.Is(err, service.ErrInvalidCommitSHA):
-			c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "The cleanup request is invalid.", false, requestID))
-		case errors.Is(err, service.ErrNoRepositoryOpen):
-			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.NoRepositoryOpen, "No repository opened.", false, requestID))
-		case errors.Is(err, service.ErrCommitNotFound):
-			c.JSON(http.StatusNotFound, common.NewErrorResponse(common.CommitNotFound, "A selected commit was not found in the current repository.", false, requestID))
-		case errors.Is(err, service.ErrRepositoryNotScanned):
-			c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryNotScanned, "Scan the repository before cleaning its history.", false, requestID))
-		case errors.Is(err, service.ErrRepositoryChanged):
-			c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryChanged, "The repository HEAD changed. Refresh and confirm the cleanup again.", false, requestID))
-		case errors.Is(err, service.ErrWorkingTreeDirty):
-			c.JSON(http.StatusConflict, common.NewErrorResponse(common.WorkingTreeDirty, "Commit or stash working tree changes before cleanup, or enable auto stash.", false, requestID))
-		case errors.Is(err, service.ErrCleanupUnsupported):
-			c.JSON(http.StatusUnprocessableEntity, common.NewErrorResponse(common.CleanupUnsupported, "The selected commits cannot be cleaned automatically.", false, requestID))
-		case errors.Is(err, service.ErrGitCommandFailed):
-			c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.GitCommandFailed, "Git could not rewrite the selected history.", false, requestID))
-		default:
-			c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.InternalError, "The selected history could not be cleaned.", false, requestID))
-		}
+		writeCleanupError(c, err, requestID, false)
 		return
 	}
 
@@ -325,4 +306,62 @@ func (h *RepositoriesHandler) Cleanup(c *gin.Context) {
 		"droppedCommitShas": req.CommitSHAs,
 	}
 	c.JSON(http.StatusOK, common.NewSuccessResponse(data, requestID))
+}
+
+func (h *RepositoriesHandler) CleanupPreview(c *gin.Context) {
+	requestID := middleware.GetRequestID(c)
+
+	type cleanupReq struct {
+		CommitSHAs   []string `json:"commitShas"`
+		ExpectedHead string   `json:"expectedHead"`
+	}
+	req := cleanupReq{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "Request body could not be parsed.", false, requestID))
+		return
+	}
+
+	affectedFiles, err := h.repoSvr.CleanupPreview(c.Request.Context(), req.CommitSHAs, req.ExpectedHead)
+	if err != nil {
+		writeCleanupError(c, err, requestID, true)
+		return
+	}
+
+	data := map[string]any{
+		"requiresConfirmation": len(affectedFiles) != 0,
+		"affectedFiles":        affectedFiles,
+	}
+
+	c.JSON(http.StatusOK, common.NewSuccessResponse(data, requestID))
+}
+
+func writeCleanupError(c *gin.Context, err error, requestID string, preview bool) {
+	switch {
+	case errors.Is(err, service.ErrInvalidCleanup), errors.Is(err, service.ErrInvalidCommitSHA):
+		c.JSON(http.StatusBadRequest, common.NewErrorResponse(common.InvalidRequest, "The cleanup request is invalid.", false, requestID))
+	case errors.Is(err, service.ErrNoRepositoryOpen):
+		c.JSON(http.StatusNotFound, common.NewErrorResponse(common.NoRepositoryOpen, "No repository opened.", false, requestID))
+	case errors.Is(err, service.ErrCommitNotFound):
+		c.JSON(http.StatusNotFound, common.NewErrorResponse(common.CommitNotFound, "A selected commit was not found in the current repository.", false, requestID))
+	case errors.Is(err, service.ErrRepositoryNotScanned):
+		c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryNotScanned, "Scan the repository before cleaning its history.", false, requestID))
+	case errors.Is(err, service.ErrRepositoryChanged):
+		c.JSON(http.StatusConflict, common.NewErrorResponse(common.RepositoryChanged, "The repository HEAD changed. Refresh and scan the repository again.", false, requestID))
+	case errors.Is(err, service.ErrWorkingTreeDirty):
+		c.JSON(http.StatusConflict, common.NewErrorResponse(common.WorkingTreeDirty, "Commit or stash working tree changes before cleanup, or enable auto stash.", false, requestID))
+	case errors.Is(err, service.ErrCleanupUnsupported):
+		c.JSON(http.StatusUnprocessableEntity, common.NewErrorResponse(common.CleanupUnsupported, "The selected commits cannot be cleaned automatically.", false, requestID))
+	case errors.Is(err, service.ErrGitCommandFailed):
+		message := "Git could not prepare the cleanup preview."
+		if !preview {
+			message = "Git could not rewrite the selected history."
+		}
+		c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.GitCommandFailed, message, false, requestID))
+	default:
+		message := "The cleanup preview could not be generated."
+		if !preview {
+			message = "The selected history could not be cleaned."
+		}
+		c.JSON(http.StatusInternalServerError, common.NewErrorResponse(common.InternalError, message, false, requestID))
+	}
 }

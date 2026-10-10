@@ -28,10 +28,10 @@ type WorkerSvr struct {
 }
 
 type ScannedRepoInfo struct {
-	RepoCommits    map[string][]entity.CommitInfo
-	RepoCommitSHAs map[string]map[string]struct{}
-	Commits        map[string]entity.CommitInfo
-	CommitsFiles   map[string][]entity.CommitFile
+	RepoCommits    map[string][]entity.CommitInfo // repoID | repo's commit info
+	RepoCommitSHAs map[string]map[string]struct{} // repoID | repo's commits' SHA set
+	Commits        map[string]entity.CommitInfo   // SHA | repo's commit info
+	CommitsFiles   map[string][]entity.CommitFile // SHA | repo's commit file
 }
 
 type Job struct {
