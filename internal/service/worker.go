@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Haruko386/commit-history-cleaner/internal/common"
@@ -177,6 +179,12 @@ func scanRepo(ctx context.Context, path string, onProgress func(current int)) ([
 		return nil, fmt.Errorf("failed to build ref map: %w", err)
 	}
 
+	objectIter, err := repo.Storer.IterEncodedObjects(plumbing.AnyObject)
+	if err != nil {
+		return nil, fmt.Errorf("failed to index git objects: %w", err)
+	}
+	objectIter.Close()
+
 	_, err = repo.Head()
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
@@ -191,16 +199,27 @@ func scanRepo(ctx context.Context, path string, onProgress func(current int)) ([
 	}
 	defer commitIter.Close()
 
-	var commits []entity.CommitInfo
-
-	err = commitIter.ForEach(func(c *object.Commit) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	var commitObjs []*object.Commit
+	for {
+		c, err := commitIter.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read commit: %w", err)
 		}
 
-		info := entity.CommitInfo{
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		commitObjs = append(commitObjs, c)
+	}
+
+	commits := make([]entity.CommitInfo, len(commitObjs))
+	for i, c := range commitObjs {
+		commits[i] = entity.CommitInfo{
 			SHA:         c.Hash.String(),
 			Message:     c.Message,
 			AuthorName:  c.Author.Name,
@@ -212,29 +231,71 @@ func scanRepo(ctx context.Context, path string, onProgress func(current int)) ([
 			AuthoredAt:  c.Author.When,
 			CommittedAt: c.Committer.When,
 		}
-
-		for _, parentHash := range c.ParentHashes {
-			info.ParentSHAs = append(info.ParentSHAs, parentHash.String())
+		for _, p := range c.ParentHashes {
+			commits[i].ParentSHAs = append(commits[i].ParentSHAs, p.String())
 		}
-
-		info.Refs = entity.Refs{
+		commits[i].Refs = entity.Refs{
 			Branches: branchesMap[c.Hash],
 			Tags:     tagsMap[c.Hash],
 		}
+	}
 
-		stats, files, err := calcStatsAndFiles(c)
-		if err != nil {
-			return fmt.Errorf("failed to calc stats for %s: %w", c.Hash, err)
+	total := runtime.NumCPU()
+
+	type indexedCommit struct {
+		index int
+		c     *object.Commit
+	}
+	jobChan := make(chan indexedCommit)
+
+	var (
+		wg        sync.WaitGroup
+		completed int64
+		firstErr  error
+		errOnce   sync.Once
+	)
+
+	for i := 0; i < total*2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for jobCommit := range jobChan {
+				stats, files, err := calcStatsAndFiles(jobCommit.c)
+				if err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+						return
+					})
+				}
+				commits[jobCommit.index].Stats = stats
+				commits[jobCommit.index].Files = files
+
+				n := atomic.AddInt64(&completed, 1)
+				if n%10 == 0 || int(n) == len(commitObjs) {
+					onProgress(int(n))
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobChan)
+		for idx, commit := range commitObjs {
+			select {
+			case <-ctx.Done():
+				return
+			case jobChan <- indexedCommit{index: idx, c: commit}:
+			}
 		}
-		info.Stats = stats
-		info.Files = files
+	}()
 
-		commits = append(commits, info)
-		onProgress(len(commits))
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get commits: %w", err)
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	commitIndexes := make(map[string]int, len(commits))
