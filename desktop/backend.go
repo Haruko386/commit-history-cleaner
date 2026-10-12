@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -37,6 +38,7 @@ func newAPIProxy(backendAddr, desktopToken string) http.Handler {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		req.Header.Set("X-Commit-History-Cleaner-Host", req.Host)
+		req.Header.Set(common.DesktopTokenHeader, desktopToken)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
@@ -77,6 +79,7 @@ func startBackend(ctx context.Context) (*http.Server, string, string, error) {
 
 	r := gin.Default()
 	r.Use(middleware.RequestID())
+	r.Use(middleware.DesktopToken(desktopToken))
 
 	router := internal.NewRouter(healthHandler, repoHandler, taskHandler)
 	router.Setup(r)
@@ -96,7 +99,7 @@ func startBackend(ctx context.Context) (*http.Server, string, string, error) {
 	}
 
 	go func() {
-		if err := httpSvr.Serve(listener); err != nil {
+		if err := httpSvr.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("failed to serve backend: %v", err)
 		}
 	}()

@@ -40,4 +40,5 @@ const (
 	GithubConnectionFailed = "GITHUB_CONNECTION_FAILED"
 	GitCommandFailed       = "GIT_COMMAND_FAILED"
 	InternalError          = "INTERNAL_ERROR"
+	Unauthorized           = "UNAUTHORIZED"
 )

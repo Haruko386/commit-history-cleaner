@@ -12,6 +12,8 @@ const (
 	GithubBaseUrl    = "https://api.github.com"
 )
 
+const DesktopTokenHeader = "X-Commit-History-Cleaner-Token"
+
 func GenerateUUID() string {
 	id := uuid.New()
 	return id.String()
