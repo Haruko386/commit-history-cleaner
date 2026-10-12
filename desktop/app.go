@@ -38,9 +38,9 @@ func (a *App) Focus() {
 }
 
 // Shutdown handles application shutdown cleanup.
-func (a *App) Shutdown() {
+func (a *App) Shutdown(ctx context.Context) {
 	if a.backend != nil {
-		toCtx, cancel := context.WithTimeout(a.ctx, time.Second*5)
+		toCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 		defer cancel()
 		err := a.backend.Shutdown(toCtx)
 		if err != nil {
