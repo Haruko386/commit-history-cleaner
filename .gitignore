@@ -47,4 +47,5 @@ cache/
 /desktop/build/bin/
 /desktop/build/windows/*.bak
 /desktop/conf/
-/desktop/frontend/dist/
+/desktop/frontend/dist/*
+!/desktop/frontend/dist/.gitkeep
