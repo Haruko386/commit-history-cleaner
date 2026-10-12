@@ -112,10 +112,23 @@ type CommitFilesResponse = {
   }
 } & ErrorResponse
 
+type CleanupPreviewResponse = {
+  data?: {
+    requiresConfirmation: boolean
+    affectedFiles: Record<string, string[]>
+  }
+} & ErrorResponse
+
+type CleanupResult = {
+  previousHead: string
+  newHead: string
+  droppedCommitShas: string[]
+}
+
 const navigation: NavigationItem[] = [
   { label: 'Overview', icon: 'overview', available: true },
   { label: 'Commit history', icon: 'history', available: true },
-  { label: 'Cleanup plan', icon: 'cleanup', available: false },
+  { label: 'Cleanup plan', icon: 'cleanup', available: true },
 ]
 
 const activeNavigation = ref('Overview')
@@ -154,6 +167,13 @@ const commitFilesError = ref('')
 const nextFileCursor = ref<string | null>(null)
 const fileSort = ref('introducedBytes')
 const fileOrder = ref('desc')
+const selectedCleanupSHAs = ref<string[]>([])
+const cleanupAutoStash = ref(false)
+const cleanupLoading = ref(false)
+const cleanupError = ref('')
+const cleanupRequiresConfirmation = ref(false)
+const cleanupAffectedFiles = ref<Record<string, string[]>>({})
+const cleanupResult = ref<CleanupResult | null>(null)
 let scanPollTimer: ReturnType<typeof setTimeout> | undefined
 
 const scanIsActive = computed(() => scanTask.value?.status === 'queued' || scanTask.value?.status === 'running')
@@ -176,6 +196,12 @@ const scanProgressLabel = computed(() => {
   if (task.status === 'completed') return `${task.progress.current} commits scanned.`
   if (task.status === 'cancelled') return 'The scan was cancelled.'
   return task.error ?? 'The scan failed.'
+})
+const commitsBySHA = computed(() => new Map(commits.value.map((commit) => [commit.sha, commit])))
+const cleanupAffectedEntries = computed(() => Object.entries(cleanupAffectedFiles.value).sort(([a], [b]) => a.localeCompare(b)))
+const cleanupPushCommand = computed(() => {
+  const branch = repository.value?.branch
+  return branch ? `git push --force-with-lease origin ${branch}` : ''
 })
 
 function showNotice(message: string, tone: 'info' | 'error' | 'success' = 'info') {
@@ -228,6 +254,28 @@ function resetCommitState() {
   commitsError.value = ''
   nextCommitCursor.value = null
   closeCommitDetail()
+  resetCleanupState()
+}
+
+function resetCleanupState() {
+  selectedCleanupSHAs.value = []
+  cleanupAutoStash.value = false
+  cleanupLoading.value = false
+  cleanupError.value = ''
+  cleanupRequiresConfirmation.value = false
+  cleanupAffectedFiles.value = {}
+  cleanupResult.value = null
+}
+
+function clearCleanupPreview() {
+  cleanupError.value = ''
+  cleanupRequiresConfirmation.value = false
+  cleanupAffectedFiles.value = {}
+}
+
+function removeCleanupCommit(sha: string) {
+  selectedCleanupSHAs.value = selectedCleanupSHAs.value.filter((selectedSHA) => selectedSHA !== sha)
+  clearCleanupPreview()
 }
 
 function closeCommitDetail() {
@@ -343,6 +391,97 @@ async function loadCommitFiles(reset: boolean) {
     if (selectedCommitSha.value === sha) commitFilesError.value = 'The local backend is unavailable.'
   } finally {
     if (selectedCommitSha.value === sha) commitFilesLoading.value = false
+  }
+}
+
+async function previewCleanup() {
+  const head = repository.value?.head
+  if (!head || selectedCleanupSHAs.value.length === 0 || cleanupLoading.value) return
+
+  cleanupLoading.value = true
+  cleanupError.value = ''
+  cleanupRequiresConfirmation.value = false
+  cleanupAffectedFiles.value = {}
+  try {
+    const response = await fetch('/api/v1/repositories/current/cleanup/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commitShas: selectedCleanupSHAs.value, expectedHead: head }),
+    })
+    const body = (await response.json()) as CleanupPreviewResponse
+    if (!response.ok || !body.data) {
+      cleanupError.value = body.error?.message ?? 'The cleanup preview could not be generated.'
+      return
+    }
+
+    cleanupAffectedFiles.value = body.data.affectedFiles
+    if (body.data.requiresConfirmation) {
+      cleanupRequiresConfirmation.value = true
+      return
+    }
+    await submitCleanup()
+  } catch {
+    cleanupError.value = 'The local backend is unavailable.'
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+async function submitCleanup() {
+  const currentRepository = repository.value
+  if (!currentRepository?.head || selectedCleanupSHAs.value.length === 0) return
+
+  const droppedCommitShas = [...selectedCleanupSHAs.value]
+  try {
+    const response = await fetch('/api/v1/repositories/current/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commitShas: droppedCommitShas,
+        expectedHead: currentRepository.head,
+        autoStash: cleanupAutoStash.value,
+      }),
+    })
+    const body = (await response.json()) as { data?: CleanupResult } & ErrorResponse
+    if (!response.ok || !body.data) {
+      cleanupError.value = body.error?.message ?? 'The selected history could not be cleaned.'
+      return
+    }
+
+    cleanupResult.value = body.data
+    repository.value = { ...currentRepository, head: body.data.newHead, analysisStatus: 'not_scanned' }
+    commits.value = []
+    commitsLoaded.value = false
+    nextCommitCursor.value = null
+    closeCommitDetail()
+    selectedCleanupSHAs.value = []
+    cleanupRequiresConfirmation.value = false
+    cleanupAffectedFiles.value = {}
+    scanRequiresForce.value = true
+    showNotice('Local commit history was rewritten. Review the result, then scan the repository again.', 'success')
+  } catch {
+    cleanupError.value = 'The local backend is unavailable.'
+  }
+}
+
+async function cleanupAnyway() {
+  if (cleanupLoading.value) return
+  cleanupLoading.value = true
+  cleanupError.value = ''
+  try {
+    await submitCleanup()
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+async function copyPushCommand() {
+  if (!cleanupPushCommand.value) return
+  try {
+    await navigator.clipboard.writeText(cleanupPushCommand.value)
+    showNotice('Push command copied.', 'success')
+  } catch {
+    showNotice('The push command could not be copied.', 'error')
   }
 }
 
@@ -658,7 +797,7 @@ onBeforeUnmount(clearScanPoll)
         <aside class="about" aria-labelledby="about-title">
           <section class="sidebar-section">
             <h2 id="about-title">About</h2>
-            <p>Analyze local Git history and prepare cleanup commands before rewriting commits.</p>
+            <p>Analyze local Git history and rewrite selected commits with an explicit preview.</p>
             <div class="safety-note">
               <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5.25 7V5a2.75 2.75 0 0 1 5.5 0v2" /></svg>
               <span><strong>Read-only by default</strong>Cleanup actions require a preview and confirmation.</span>
@@ -739,7 +878,12 @@ onBeforeUnmount(clearScanPoll)
           <section class="box commit-list-box" aria-labelledby="commit-history-title">
             <header class="box-header commit-list-header">
               <strong id="commit-history-title">Commits</strong>
-              <span>{{ commits.length }} loaded</span>
+              <div class="commit-list-actions">
+                <span>{{ commits.length }} loaded · {{ selectedCleanupSHAs.length }} selected</span>
+                <button class="button" type="button" :disabled="selectedCleanupSHAs.length === 0" @click="activeNavigation = 'Cleanup plan'">
+                  Review cleanup
+                </button>
+              </div>
             </header>
 
             <div v-if="commitsError" class="commit-message commit-message-error">
@@ -750,7 +894,10 @@ onBeforeUnmount(clearScanPoll)
             <div v-else-if="commitsLoaded && commits.length === 0" class="commit-message">No commits match these filters.</div>
 
             <ol v-else class="commit-list">
-              <li v-for="commit in commits" :key="commit.sha">
+              <li v-for="commit in commits" :key="commit.sha" class="commit-list-item" :class="{ 'commit-list-item-selected': selectedCleanupSHAs.includes(commit.sha) }">
+                <label class="commit-selection" :aria-label="`Select ${commit.shortSha} for cleanup`">
+                  <input v-model="selectedCleanupSHAs" type="checkbox" :value="commit.sha" @change="clearCleanupPreview" />
+                </label>
                 <button class="commit-row" type="button" @click="openCommit(commit.sha)">
                   <div class="commit-main">
                     <div class="commit-subject-line">
@@ -876,6 +1023,105 @@ onBeforeUnmount(clearScanPoll)
               </div>
             </section>
           </template>
+        </template>
+      </section>
+
+      <section v-else-if="activeNavigation === 'Cleanup plan'" class="cleanup-page" aria-labelledby="cleanup-title">
+        <div v-if="!repository" class="box blank-state">
+          <svg class="blank-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.75 5.75h7l2 2h9.5v11.5H2.75V5.75Z" /><path d="M2.75 9.25h18.5" /></svg>
+          <h1>Open a repository first</h1>
+          <p>Select and scan a local Git repository before preparing a cleanup.</p>
+          <button class="button button-primary" type="button" @click="activeNavigation = 'Overview'">Go to Overview</button>
+        </div>
+
+        <section v-else-if="cleanupResult" class="box cleanup-result" aria-labelledby="cleanup-result-title">
+          <header class="box-header"><strong id="cleanup-result-title">Cleanup completed locally</strong></header>
+          <div class="cleanup-result-body">
+            <p>The current branch was rewritten. The remote repository has not been changed.</p>
+            <dl class="cleanup-heads">
+              <div><dt>Previous HEAD</dt><dd class="monospace">{{ cleanupResult.previousHead }}</dd></div>
+              <div><dt>New HEAD</dt><dd class="monospace">{{ cleanupResult.newHead }}</dd></div>
+              <div><dt>Dropped commits</dt><dd>{{ cleanupResult.droppedCommitShas.length }}</dd></div>
+            </dl>
+            <div v-if="cleanupPushCommand" class="push-command">
+              <code>{{ cleanupPushCommand }}</code>
+              <button class="button" type="button" @click="copyPushCommand">Copy</button>
+            </div>
+            <p class="cleanup-help">Review the rewritten history before pushing. Other branches and tags are not updated automatically.</p>
+            <button class="button button-primary" type="button" @click="activeNavigation = 'Overview'">Scan repository again</button>
+          </div>
+        </section>
+
+        <div v-else-if="repository.analysisStatus !== 'ready'" class="box blank-state">
+          <svg class="blank-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.75-6.48L3 8" /><path d="M3 3.5V8h4.5M12 7v5l3 2" /></svg>
+          <h1>Scan the repository</h1>
+          <p>A fresh scan is required before selecting commits for cleanup.</p>
+          <button class="button button-primary" type="button" @click="activeNavigation = 'Overview'">Go to scan</button>
+        </div>
+
+        <div v-else-if="selectedCleanupSHAs.length === 0" class="box blank-state">
+          <svg class="blank-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M7 6l1 14h8l1-14M10 10v6M14 10v6" /></svg>
+          <h1>Select commits to clean up</h1>
+          <p>Choose one or more commits from Commit history, then return here to review them.</p>
+          <button class="button button-primary" type="button" @click="activeNavigation = 'Commit history'">Choose commits</button>
+        </div>
+
+        <template v-else>
+          <section class="box cleanup-plan" aria-labelledby="cleanup-title">
+            <header class="box-header cleanup-header">
+              <div><strong id="cleanup-title">Cleanup plan</strong><span>{{ selectedCleanupSHAs.length }} commits selected</span></div>
+              <button class="button" type="button" @click="activeNavigation = 'Commit history'">Add commits</button>
+            </header>
+
+            <ul class="cleanup-commit-list">
+              <li v-for="sha in selectedCleanupSHAs" :key="sha">
+                <div>
+                  <strong>{{ commitsBySHA.get(sha)?.subject ?? 'Selected commit' }}</strong>
+                  <code>{{ sha }}</code>
+                </div>
+                <button class="button" type="button" @click="removeCleanupCommit(sha)">Remove</button>
+              </li>
+            </ul>
+
+            <div class="cleanup-options">
+              <label>
+                <input v-model="cleanupAutoStash" type="checkbox" />
+                <span><strong>Automatically stash local changes</strong><small>Disabled by default. Untracked files are restored after cleanup.</small></span>
+              </label>
+            </div>
+          </section>
+
+          <div v-if="cleanupError" class="flash flash-error" role="alert">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" /><path d="M8 4.5v4M8 11.25v.25" /></svg>
+            <span>{{ cleanupError }}</span>
+          </div>
+
+          <section v-if="cleanupRequiresConfirmation" class="box cleanup-warning" aria-labelledby="cleanup-warning-title">
+            <header class="box-header"><strong id="cleanup-warning-title">Files still present in the current HEAD</strong></header>
+            <div class="cleanup-warning-body">
+              <p>Dropping these commits may remove or change the following paths. This check does not follow later renames.</p>
+              <div v-for="([sha, files]) in cleanupAffectedEntries" :key="sha" class="affected-commit">
+                <code>{{ sha }}</code>
+                <ul><li v-for="file in files" :key="file" class="monospace">{{ file }}</li></ul>
+              </div>
+            </div>
+          </section>
+
+          <section class="box cleanup-submit">
+            <div>
+              <strong>Rewrite local history</strong>
+              <span>This runs synchronously and does not push to a remote.</span>
+            </div>
+            <div class="cleanup-submit-actions">
+              <button v-if="cleanupRequiresConfirmation" class="button" type="button" :disabled="cleanupLoading" @click="previewCleanup">Check again</button>
+              <button v-if="cleanupRequiresConfirmation" class="button button-danger" type="button" :disabled="cleanupLoading" @click="cleanupAnyway">
+                {{ cleanupLoading ? 'Cleaning up…' : 'Cleanup anyway' }}
+              </button>
+              <button v-else class="button button-danger" type="button" :disabled="cleanupLoading" @click="previewCleanup">
+                {{ cleanupLoading ? 'Checking…' : 'Clean up selected commits' }}
+              </button>
+            </div>
+          </section>
         </template>
       </section>
     </main>

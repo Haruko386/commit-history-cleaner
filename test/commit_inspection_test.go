@@ -440,6 +440,71 @@ func TestCleanupAutoStashRestoresWorkingTree(t *testing.T) {
 	}
 }
 
+func TestCleanupPreviewUsesCurrentHeadTree(t *testing.T) {
+	repositoryService, _, updateHash, headHash := newCommitInspectionFixture(t)
+	affectedFiles, err := repositoryService.CleanupPreview(context.Background(), []string{updateHash.String()}, headHash.String())
+	if err != nil {
+		t.Fatalf("preview cleanup: %v", err)
+	}
+	files := affectedFiles[updateHash.String()]
+	if len(files) != 1 || files[0] != "new.txt" {
+		t.Errorf("affected files = %v, want [new.txt]", files)
+	}
+
+	missingSHA := "0123456789012345678901234567890123456789"
+	affectedFiles, err = repositoryService.CleanupPreview(context.Background(), []string{missingSHA}, headHash.String())
+	if err != nil {
+		t.Fatalf("preview missing commit: %v", err)
+	}
+	if len(affectedFiles) != 0 {
+		t.Errorf("missing commit affected files = %v, want empty", affectedFiles)
+	}
+}
+
+func TestCleanupPreviewEndpointContractAndErrors(t *testing.T) {
+	validSHA := "0123456789012345678901234567890123456789"
+	withoutRepository := newCommitInspectionRouter(service.NewRepositoriesSvr(service.NewTaskSvr()))
+	assertCleanupPreviewError(t, withoutRepository, map[string]any{
+		"commitShas":   []string{validSHA},
+		"expectedHead": validSHA,
+	}, http.StatusNotFound, common.NoRepositoryOpen)
+
+	repositoryService, rootHash, updateHash, headHash := newCommitInspectionFixture(t)
+	router := newCommitInspectionRouter(repositoryService)
+	response := performCleanupPost(router, "/api/v1/repositories/current/cleanup/preview", map[string]any{
+		"commitShas":   []string{updateHash.String()},
+		"expectedHead": headHash.String(),
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var body struct {
+		Data struct {
+			RequiresConfirmation bool                `json:"requiresConfirmation"`
+			AffectedFiles        map[string][]string `json:"affectedFiles"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if !body.Data.RequiresConfirmation || len(body.Data.AffectedFiles[updateHash.String()]) != 1 {
+		t.Errorf("unexpected preview response: %+v", body.Data)
+	}
+
+	assertCleanupPreviewError(t, router, map[string]any{
+		"commitShas":   []string{"short"},
+		"expectedHead": headHash.String(),
+	}, http.StatusBadRequest, common.InvalidRequest)
+	assertCleanupPreviewError(t, router, map[string]any{
+		"commitShas":   []string{rootHash.String()},
+		"expectedHead": headHash.String(),
+	}, http.StatusUnprocessableEntity, common.CleanupUnsupported)
+	assertCleanupPreviewError(t, router, map[string]any{
+		"commitShas":   []string{updateHash.String()},
+		"expectedHead": validSHA,
+	}, http.StatusConflict, common.RepositoryChanged)
+}
+
 func newCommitInspectionFixture(t *testing.T) (*service.RepositoriesSvr, plumbing.Hash, plumbing.Hash, plumbing.Hash) {
 	t.Helper()
 	repositoryPath := t.TempDir()
@@ -538,6 +603,7 @@ func newCommitInspectionRouter(repositoryService *service.RepositoriesSvr) *gin.
 	router.GET("/api/v1/repositories/current/commits/:sha", repositoryHandler.GetCommit)
 	router.GET("/api/v1/repositories/current/commits/:sha/files", repositoryHandler.GetFiles)
 	router.POST("/api/v1/repositories/current/cleanup", repositoryHandler.Cleanup)
+	router.POST("/api/v1/repositories/current/cleanup/preview", repositoryHandler.CleanupPreview)
 	return router
 }
 
@@ -568,14 +634,7 @@ func reopenAndRescan(t *testing.T, repositoryService *service.RepositoriesSvr, r
 
 func assertCleanupError(t *testing.T, router *gin.Engine, requestBody map[string]any, expectedStatus int, expectedCode string) {
 	t.Helper()
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		t.Fatalf("encode cleanup request: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/current/cleanup", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
+	response := performCleanupPost(router, "/api/v1/repositories/current/cleanup", requestBody)
 	if response.Code != expectedStatus {
 		t.Fatalf("cleanup status = %d, want %d; body=%s", response.Code, expectedStatus, response.Body.String())
 	}
@@ -586,6 +645,33 @@ func assertCleanupError(t *testing.T, router *gin.Engine, requestBody map[string
 	if errorBody.Error.Code != expectedCode {
 		t.Errorf("cleanup code = %q, want %q", errorBody.Error.Code, expectedCode)
 	}
+}
+
+func assertCleanupPreviewError(t *testing.T, router *gin.Engine, requestBody map[string]any, expectedStatus int, expectedCode string) {
+	t.Helper()
+	response := performCleanupPost(router, "/api/v1/repositories/current/cleanup/preview", requestBody)
+	if response.Code != expectedStatus {
+		t.Fatalf("cleanup preview status = %d, want %d; body=%s", response.Code, expectedStatus, response.Body.String())
+	}
+	var errorBody common.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &errorBody); err != nil {
+		t.Fatalf("decode cleanup preview error: %v", err)
+	}
+	if errorBody.Error.Code != expectedCode {
+		t.Errorf("cleanup preview code = %q, want %q", errorBody.Error.Code, expectedCode)
+	}
+}
+
+func performCleanupPost(router *gin.Engine, path string, requestBody map[string]any) *httptest.ResponseRecorder {
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		panic(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
 }
 
 func performCommitInspectionRequest(router *gin.Engine, path string) *httptest.ResponseRecorder {

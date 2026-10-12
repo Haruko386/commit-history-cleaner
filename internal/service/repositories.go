@@ -765,124 +765,25 @@ func sortCommitFiles(commitFiles []entity.CommitFile, sortName, order string) {
 	}
 }
 
+type cleanupSelection struct {
+	repoID     string
+	commitSHAs []string
+	upstream   string
+}
+
 func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expectedHead string, autoStash bool) (newHead string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.current == nil {
-		return "", ErrNoRepositoryOpen
-	}
-	if s.current.Head == nil || s.current.DetachedHead {
-		return "", ErrCleanupUnsupported
-	}
-	if s.current.AnalysisStatus != entity.RepoReady {
-		return "", ErrRepositoryNotScanned
-	}
-	if len(commitShas) == 0 {
-		return "", ErrInvalidCleanup
-	}
-
-	selected := make(map[string]struct{}, len(commitShas))
-	for index, sha := range commitShas {
-		sha = strings.ToLower(strings.TrimSpace(sha))
-		if !isFullCommitSHA(sha) {
-			return "", ErrInvalidCommitSHA
-		}
-		if _, exists := selected[sha]; exists {
-			return "", ErrInvalidCleanup
-		}
-		selected[sha] = struct{}{}
-		commitShas[index] = sha
-	}
-
-	expectedHead = strings.ToLower(strings.TrimSpace(expectedHead))
-	if !isFullCommitSHA(expectedHead) {
-		return "", ErrInvalidCommitSHA
-	}
-	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	headCmd.Dir = s.current.Path
-	headOutput, err := headCmd.Output()
+	validatedSHAs, expectedHead, err := s.validateCleanupRequestLocked(ctx, commitShas, expectedHead)
 	if err != nil {
-		return "", fmt.Errorf("%w: read current HEAD: %v", ErrGitCommandFailed, err)
+		return "", err
 	}
-	if strings.ToLower(*s.current.Head) != expectedHead || strings.ToLower(strings.TrimSpace(string(headOutput))) != expectedHead {
-		return "", ErrRepositoryChanged
+	selection, err := s.validateCleanupSelectionLocked(validatedSHAs, expectedHead, false)
+	if err != nil {
+		return "", err
 	}
-
-	repoID := common.GenerateRepoID(s.current.Path)
-	s.taskSvr.worker.mu.Lock()
-	repoCommitSHAs, scanned := s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs[repoID]
-	if !scanned {
-		s.taskSvr.worker.mu.Unlock()
-		return "", ErrRepositoryNotScanned
-	}
-	for sha := range selected {
-		if _, exists := repoCommitSHAs[sha]; !exists {
-			s.taskSvr.worker.mu.Unlock()
-			return "", fmt.Errorf("%w: %s", ErrCommitNotFound, sha)
-		}
-	}
-
-	reachable := make(map[string]struct{})
-	stack := []string{expectedHead}
-	for len(stack) > 0 {
-		sha := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if _, visited := reachable[sha]; visited {
-			continue
-		}
-		commit, exists := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
-		if !exists {
-			continue
-		}
-		reachable[sha] = struct{}{}
-		stack = append(stack, commit.ParentSHAs...)
-	}
-	for sha := range selected {
-		if _, exists := reachable[sha]; !exists {
-			s.taskSvr.worker.mu.Unlock()
-			return "", fmt.Errorf("%w: commit %s is not reachable from HEAD", ErrCleanupUnsupported, sha)
-		}
-		commit := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
-		if len(commit.ParentSHAs) != 1 {
-			s.taskSvr.worker.mu.Unlock()
-			return "", fmt.Errorf("%w: commit %s is a root or merge commit", ErrCleanupUnsupported, sha)
-		}
-	}
-
-	firstParentHistory := make([]entity.CommitInfo, 0)
-	for sha := expectedHead; sha != ""; {
-		commit, exists := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
-		if !exists {
-			break
-		}
-		firstParentHistory = append(firstParentHistory, commit)
-		if len(commit.ParentSHAs) == 0 {
-			break
-		}
-		sha = commit.ParentSHAs[0]
-	}
-
-	oldestSelectedIndex := -1
-	selectedOnFirstParent := 0
-	for index, commit := range firstParentHistory {
-		if _, exists := selected[commit.SHA]; exists {
-			oldestSelectedIndex = index
-			selectedOnFirstParent++
-		}
-	}
-	if selectedOnFirstParent != len(selected) {
-		s.taskSvr.worker.mu.Unlock()
-		return "", fmt.Errorf("%w: selected commits must be on the current branch first-parent history", ErrCleanupUnsupported)
-	}
-	for index := 0; index < oldestSelectedIndex; index++ {
-		if len(firstParentHistory[index].ParentSHAs) > 1 {
-			s.taskSvr.worker.mu.Unlock()
-			return "", fmt.Errorf("%w: the rewritten commit range contains a merge commit", ErrCleanupUnsupported)
-		}
-	}
-	upstream := firstParentHistory[oldestSelectedIndex].ParentSHAs[0]
-	s.taskSvr.worker.mu.Unlock()
+	commitShas = selection.commitSHAs
 
 	// exec command
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -933,7 +834,7 @@ func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expe
 		"TARGET_SHAS="+strings.Join(commitShas, " "),
 		"GIT_TERMINAL_PROMPT=0",
 	)
-	rebaseCmd := exec.CommandContext(ctx, "git", "-c", "core.abbrev=40", "rebase", "-i", upstream)
+	rebaseCmd := exec.CommandContext(ctx, "git", "-c", "core.abbrev=40", "rebase", "-i", selection.upstream)
 	rebaseCmd.Dir = s.current.Path
 	rebaseCmd.Env = env
 	if output, rebaseErr := rebaseCmd.CombinedOutput(); rebaseErr != nil {
@@ -943,9 +844,9 @@ func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expe
 		return "", fmt.Errorf("%w: git rebase failed: %v: %s", ErrGitCommandFailed, rebaseErr, strings.TrimSpace(string(output)))
 	}
 
-	headCmd = exec.CommandContext(context.Background(), "git", "rev-parse", "HEAD")
+	headCmd := exec.CommandContext(context.Background(), "git", "rev-parse", "HEAD")
 	headCmd.Dir = s.current.Path
-	headOutput, err = headCmd.Output()
+	headOutput, err := headCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("%w: read rewritten HEAD: %v", ErrGitCommandFailed, err)
 	}
@@ -959,9 +860,182 @@ func (s *RepositoriesSvr) Cleanup(ctx context.Context, commitShas []string, expe
 	}
 
 	s.taskSvr.worker.mu.Lock()
-	delete(s.taskSvr.worker.scannedRepoInfo.RepoCommits, repoID)
-	delete(s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs, repoID)
+	delete(s.taskSvr.worker.scannedRepoInfo.RepoCommits, selection.repoID)
+	delete(s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs, selection.repoID)
 	s.taskSvr.worker.mu.Unlock()
 
 	return newHead, nil
+}
+
+func (s *RepositoriesSvr) CleanupPreview(ctx context.Context, commitShas []string, expectedHead string) (map[string][]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	validatedSHAs, expectedHead, err := s.validateCleanupRequestLocked(ctx, commitShas, expectedHead)
+	if err != nil {
+		return nil, err
+	}
+	selection, err := s.validateCleanupSelectionLocked(validatedSHAs, expectedHead, true)
+	if err != nil {
+		return nil, err
+	}
+
+	repository, err := git.PlainOpenWithOptions(s.current.Path, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return nil, fmt.Errorf("open repository for cleanup preview: %w", err)
+	}
+	headCommit, err := repository.CommitObject(plumbing.NewHash(expectedHead))
+	if err != nil {
+		return nil, fmt.Errorf("read HEAD commit for cleanup preview: %w", err)
+	}
+	headTree, err := headCommit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("read HEAD tree for cleanup preview: %w", err)
+	}
+
+	filesByCommit := make(map[string][]entity.CommitFile, len(selection.commitSHAs))
+	s.taskSvr.worker.mu.Lock()
+	for _, commitSHA := range selection.commitSHAs {
+		filesByCommit[commitSHA] = append([]entity.CommitFile(nil), s.taskSvr.worker.scannedRepoInfo.CommitsFiles[commitSHA]...)
+	}
+	s.taskSvr.worker.mu.Unlock()
+
+	affectedFiles := make(map[string][]string)
+	for _, commitSHA := range selection.commitSHAs {
+		for _, file := range filesByCommit[commitSHA] {
+			if _, err := headTree.FindEntry(file.Path); err == nil {
+				affectedFiles[commitSHA] = append(affectedFiles[commitSHA], file.Path)
+			} else if !errors.Is(err, object.ErrEntryNotFound) {
+				return nil, fmt.Errorf("check current path %s: %w", file.Path, err)
+			}
+		}
+	}
+	return affectedFiles, nil
+}
+
+func (s *RepositoriesSvr) validateCleanupSelectionLocked(commitSHAs []string, expectedHead string, skipMissing bool) (cleanupSelection, error) {
+	selection := cleanupSelection{repoID: common.GenerateRepoID(s.current.Path)}
+	s.taskSvr.worker.mu.Lock()
+	defer s.taskSvr.worker.mu.Unlock()
+
+	repoCommitSHAs, scanned := s.taskSvr.worker.scannedRepoInfo.RepoCommitSHAs[selection.repoID]
+	if !scanned {
+		return selection, ErrRepositoryNotScanned
+	}
+	selected := make(map[string]struct{}, len(commitSHAs))
+	for _, sha := range commitSHAs {
+		if _, exists := repoCommitSHAs[sha]; !exists {
+			if skipMissing {
+				continue
+			}
+			return selection, fmt.Errorf("%w: %s", ErrCommitNotFound, sha)
+		}
+		selected[sha] = struct{}{}
+		selection.commitSHAs = append(selection.commitSHAs, sha)
+	}
+	if len(selected) == 0 {
+		return selection, nil
+	}
+
+	reachable := make(map[string]struct{})
+	stack := []string{expectedHead}
+	for len(stack) > 0 {
+		sha := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, visited := reachable[sha]; visited {
+			continue
+		}
+		commit, exists := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+		if !exists {
+			continue
+		}
+		reachable[sha] = struct{}{}
+		stack = append(stack, commit.ParentSHAs...)
+	}
+	for sha := range selected {
+		if _, exists := reachable[sha]; !exists {
+			return selection, fmt.Errorf("%w: commit %s is not reachable from HEAD", ErrCleanupUnsupported, sha)
+		}
+		commit := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+		if len(commit.ParentSHAs) != 1 {
+			return selection, fmt.Errorf("%w: commit %s is a root or merge commit", ErrCleanupUnsupported, sha)
+		}
+	}
+
+	firstParentHistory := make([]entity.CommitInfo, 0)
+	for sha := expectedHead; sha != ""; {
+		commit, exists := s.taskSvr.worker.scannedRepoInfo.Commits[sha]
+		if !exists {
+			break
+		}
+		firstParentHistory = append(firstParentHistory, commit)
+		if len(commit.ParentSHAs) == 0 {
+			break
+		}
+		sha = commit.ParentSHAs[0]
+	}
+
+	oldestSelectedIndex := -1
+	selectedOnFirstParent := 0
+	for index, commit := range firstParentHistory {
+		if _, exists := selected[commit.SHA]; exists {
+			oldestSelectedIndex = index
+			selectedOnFirstParent++
+		}
+	}
+	if selectedOnFirstParent != len(selected) {
+		return selection, fmt.Errorf("%w: selected commits must be on the current branch first-parent history", ErrCleanupUnsupported)
+	}
+	for index := 0; index < oldestSelectedIndex; index++ {
+		if len(firstParentHistory[index].ParentSHAs) > 1 {
+			return selection, fmt.Errorf("%w: the rewritten commit range contains a merge commit", ErrCleanupUnsupported)
+		}
+	}
+	selection.upstream = firstParentHistory[oldestSelectedIndex].ParentSHAs[0]
+	return selection, nil
+}
+
+func (s *RepositoriesSvr) validateCleanupRequestLocked(ctx context.Context, commitShas []string, expectedHead string) ([]string, string, error) {
+	if s.current == nil {
+		return nil, "", ErrNoRepositoryOpen
+	}
+	if s.current.Head == nil || s.current.DetachedHead {
+		return nil, "", ErrCleanupUnsupported
+	}
+	if s.current.AnalysisStatus != entity.RepoReady {
+		return nil, "", ErrRepositoryNotScanned
+	}
+	if len(commitShas) == 0 {
+		return nil, "", ErrInvalidCleanup
+	}
+
+	validatedSHAs := make([]string, 0, len(commitShas))
+	selected := make(map[string]struct{}, len(commitShas))
+	for _, sha := range commitShas {
+		sha = strings.ToLower(strings.TrimSpace(sha))
+		if !isFullCommitSHA(sha) {
+			return nil, "", ErrInvalidCommitSHA
+		}
+		if _, exists := selected[sha]; exists {
+			return nil, "", ErrInvalidCleanup
+		}
+		selected[sha] = struct{}{}
+		validatedSHAs = append(validatedSHAs, sha)
+	}
+
+	expectedHead = strings.ToLower(strings.TrimSpace(expectedHead))
+	if !isFullCommitSHA(expectedHead) {
+		return nil, "", ErrInvalidCommitSHA
+	}
+	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = s.current.Path
+	headOutput, err := headCmd.Output()
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: read current HEAD: %v", ErrGitCommandFailed, err)
+	}
+	if strings.ToLower(*s.current.Head) != expectedHead || strings.ToLower(strings.TrimSpace(string(headOutput))) != expectedHead {
+		return nil, "", ErrRepositoryChanged
+	}
+
+	return validatedSHAs, expectedHead, nil
 }
