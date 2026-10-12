@@ -119,7 +119,7 @@ p, h1, h2 { margin-top: 0; }
 .repository-title > span:first-of-type { color: var(--accent-fg); font-size: 20px; font-weight: 600; }
 .label { padding: 1px 7px; border: 1px solid var(--border-default); border-radius: 999px; color: var(--fg-muted); font-size: 12px; font-weight: 500; }
 
-.tab-navigation { margin-top: 14px; display: flex; align-items: end; gap: 4px; overflow-x: auto; }
+.tab-navigation { margin-top: 14px; display: flex; align-items: end; gap: 4px; overflow-x: auto; overflow-y: hidden; }
 .tab-item {
   position: relative;
   min-height: 40px;
