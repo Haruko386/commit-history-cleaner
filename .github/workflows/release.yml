@@ -114,6 +114,11 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Stage frontend assets for embedding
+        if: steps.wails.outputs.ready == 'true'
+        shell: bash
+        run: cp -r frontend/dist/. desktop/frontend/dist/
+
       - name: Install Wails CLI
         if: steps.wails.outputs.ready == 'true'
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
